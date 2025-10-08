@@ -15,22 +15,22 @@
 
 import ygoenv.entry  # noqa: F401
 from ygoenv.registration import (
-  list_all_envs,
-  make,
-  make_dm,
-  make_gym,
-  make_gymnasium,
-  make_spec,
-  register,
+    list_all_envs,
+    make,
+    make_dm,
+    make_gym,
+    make_gymnasium,
+    make_spec,
+    register,
 )
 
 __version__ = "0.8.4"
 __all__ = [
-  "register",
-  "make",
-  "make_dm",
-  "make_gym",
-  "make_gymnasium",
-  "make_spec",
-  "list_all_envs",
+    "register",
+    "make",
+    "make_dm",
+    "make_gym",
+    "make_gymnasium",
+    "make_spec",
+    "list_all_envs",
 ]
