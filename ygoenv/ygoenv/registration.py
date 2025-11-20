@@ -85,9 +85,12 @@ class EnvRegistry:
 
         # check arguments
         if "seed" in kwargs:  # Issue 214
-            INT_MAX = 2**31
-            assert -INT_MAX <= kwargs["seed"] < INT_MAX, \
-                f"Seed should be in range of int32, got {kwargs['seed']}"
+            if kwargs["seed"] is None:
+                kwargs.pop("seed")
+            else:
+                INT_MAX = 2**31
+                assert -INT_MAX <= kwargs["seed"] < INT_MAX, \
+                    f"Seed should be in range of int32, got {kwargs['seed']}"
         if "num_envs" in kwargs:
             assert kwargs["num_envs"] >= 1
         if "batch_size" in kwargs:
