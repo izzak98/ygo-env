@@ -38,15 +38,16 @@ auto common_state_spec =
              "info:players.env_id"_.Bind(Spec<int>({-1})),
              "elapsed_step"_.Bind(Spec<int>({})), "done"_.Bind(Spec<bool>({})),
              "reward"_.Bind(Spec<float>({-1})),
-             "discount"_.Bind(Spec<float>({-1}, {0.0, 1.0})),
+             "discount"_.Bind(Spec<float>({-1}, std::make_tuple(0.0f, 1.0f))),
              "step_type"_.Bind(Spec<int>({})), "trunc"_.Bind(Spec<bool>({})));
 
 /**
  * EnvSpec funciton, it constructs the env spec when a Config is passed.
  */
 template <typename EnvFns>
-class EnvSpec {
- public:
+class EnvSpec
+{
+public:
   using EnvFnsType = EnvFns;
   using Config = decltype(ConcatDict(common_config, EnvFns::DefaultConfig()));
   using ConfigKeys = typename Config::Keys;
@@ -66,21 +67,24 @@ class EnvSpec {
       ConcatDict(common_config, EnvFns::DefaultConfig());
 
   EnvSpec() : EnvSpec(kDefaultConfig) {}
-  explicit EnvSpec(const ConfigValues& conf)
+  explicit EnvSpec(const ConfigValues &conf)
       : config(conf),
         state_spec(ConcatDict(common_state_spec, EnvFns::StateSpec(config))),
         action_spec(
-            ConcatDict(common_action_spec, EnvFns::ActionSpec(config))) {
-    if (config["batch_size"_] > config["num_envs"_]) {
+            ConcatDict(common_action_spec, EnvFns::ActionSpec(config)))
+  {
+    if (config["batch_size"_] > config["num_envs"_])
+    {
       throw std::invalid_argument(
           "It is required that batch_size <= num_envs, got num_envs = " +
           std::to_string(config["num_envs"_]) +
           ", batch_size = " + std::to_string(config["batch_size"_]));
     }
-    if (config["batch_size"_] == 0) {
+    if (config["batch_size"_] == 0)
+    {
       config["batch_size"_] = config["num_envs"_];
     }
   }
 };
 
-#endif  // YGOENV_CORE_ENV_SPEC_H_
+#endif // YGOENV_CORE_ENV_SPEC_H_
