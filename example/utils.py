@@ -1,7 +1,7 @@
 # example/utils.py
 import numpy as np
 from pathlib import Path
-from ygoenv.ygopro import init_module
+from ygoenv.edopro import init_module
 
 
 def load_deck(fn):

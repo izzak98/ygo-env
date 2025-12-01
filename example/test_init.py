@@ -10,9 +10,9 @@ import numpy as np
 from utils import init_ygopro
 
 # Set up paths
-env_id = "YGOPro-v1"
+env_id = "EDOPro-v0"
 lang = "english"
-deck = "assets/deck/Voiceless.ydk"
+deck = "assets/deck/striker_biker.ydk"
 code_list_file = "example/code_list.txt"
 
 print(f"Current directory: {os.getcwd()}")
@@ -52,13 +52,12 @@ try:
         seed=seed,
         deck1=deck_result,  # Use the result from init_ygopro
         deck2=deck_result,  # Use the result from init_ygopro
-        player=-1,
+        player=1,
         max_options=24,
         n_history_actions=32,
         play_mode='self',
-        async_reset=False,
         verbose=True,
-        record=False,
+        record=True,
     )
     print("Environment created successfully!")
 
@@ -71,11 +70,11 @@ try:
     # Try a single step
     print("\nTrying a step...")
     while True:
-        actions = np.array([0])
-        a = envs.step(actions)
+        n_actions = np.clip(obs["actions_"].sum(axis=2), 0, 1).sum()
+        action = np.random.randint(0, n_actions, size=(obs["cards_"].shape[0],))
+        obs, _, _, _, infos = envs.step(action)
         # print("env output:\n", a)
         print("Step successful!")
-        break
 
 except Exception as e:
     print(f"Environment creation/usage failed: {e}")
