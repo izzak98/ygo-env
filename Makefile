@@ -8,8 +8,8 @@ DATABASE_REPO  := https://raw.githubusercontent.com/mycard/ygopro-database/HEAD/
 LOCALES        := en zh
 
 # Where the built Python extension lands
-YGOENV_PKG_DIR := ygoenv/ygoenv/ygopro
-YGOENV_SO_GLOB := $(YGOENV_PKG_DIR)/ygopro_ygoenv*.so
+YGOENV_PKG_DIR := ygoenv/ygoenv/edopro
+YGOENV_SO_GLOB := $(YGOENV_PKG_DIR)/edopro_ygoenv*.so
 
 # ===== Helper: fetch if newer =====
 define FETCH_IF_NEWER
