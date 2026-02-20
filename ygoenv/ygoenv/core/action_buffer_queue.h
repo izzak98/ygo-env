@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,8 @@ class ActionBufferQueue {
     int env_id;
     int order;
     bool force_reset;
+    bool has_reset_seed = false;
+    uint64_t reset_seed = 0;
   };
 
  protected:

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <ctime>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <cstring>
@@ -2094,8 +2095,14 @@ namespace ygopro
       return mduel;
     }
 
-    void reset()
+    void reset(std::optional<uint64_t> seed = std::nullopt)
     {
+      // When seed is provided, (re)seed RNGs for reproducible resets
+      if (seed.has_value()) {
+        gen_.seed(*seed);
+        duel_gen_ = std::mt19937(dist_int_(gen_));
+      }
+
       // clock_t start = clock();
 
       if (random_mode())
@@ -6516,12 +6523,12 @@ namespace ygopro
       state["obs:global_"_][22] = uint8_t(1);
     }
 
-    void Reset() override
+    void Reset(std::optional<uint64_t> seed = std::nullopt) override
     {
       int idx = env_impls_.size() - 1;
       auto &pool = get_pool(idx);
-      auto fut = pool.submit_task([this, idx]()
-                                  { env_impls_[idx].reset(); });
+      auto fut = pool.submit_task([this, idx, seed]()
+                                  { env_impls_[idx].reset(seed); });
       if (fut.wait_for(std::chrono::seconds(timeout_)) != std::future_status::ready)
       {
         throw std::runtime_error("Reset timeout");

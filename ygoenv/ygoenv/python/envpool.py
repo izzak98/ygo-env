@@ -144,14 +144,31 @@ class EnvPoolMixin(ABC):
     def reset(
         self: EnvPool,
         env_id: Optional[np.ndarray] = None,
+        seed: Optional[Union[int, np.ndarray]] = None,
     ) -> Union[TimeStep, Tuple]:
         """Reset envs in env_id.
 
+        Optionally pass seed(s) for reproducible resets. If seed is an int,
+        it is broadcast to all envs being reset. If seed is a numpy array,
+        it must have the same length as env_id (one seed per env).
         This behavior is not defined in async mode.
         """
         if env_id is None:
             env_id = self.all_env_ids
-        self._reset(env_id)
+        env_id = np.asarray(env_id, dtype=np.int32)
+        if seed is not None:
+            seeds = np.asarray(seed, dtype=np.uint64)
+            if seeds.ndim == 0:
+                seeds = np.full(env_id.shape, seeds.item(), dtype=np.uint64)
+            elif seeds.shape != env_id.shape:
+                raise ValueError(
+                    "seed must be a scalar or have the same length as env_id"
+                )
+            else:
+                seeds = np.require(seeds, dtype=np.uint64, requirements=["C_CONTIGUOUS", "W"])
+            self._reset(env_id, seeds)
+        else:
+            self._reset(env_id)
         return self.recv(
             reset=True, return_info=self.config["gym_reset_return_info"]
         )

@@ -19,7 +19,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -123,7 +125,12 @@ class AsyncEnvPool : public EnvPool<typename Env::Spec> {
           int env_id = raw_action.env_id;
           int order = raw_action.order;
           bool reset = raw_action.force_reset || envs_[env_id]->IsDone();
-          envs_[env_id]->EnvStep(state_buffer_queue_.get(), order, reset);
+          std::optional<uint64_t> reset_seed;
+          if (reset && raw_action.has_reset_seed) {
+            reset_seed = raw_action.reset_seed;
+          }
+          envs_[env_id]->EnvStep(state_buffer_queue_.get(), order, reset,
+                                 reset_seed);
         }
       });
     }
@@ -173,14 +180,22 @@ class AsyncEnvPool : public EnvPool<typename Env::Spec> {
     return ret;
   }
 
-  void Reset(const Array& env_ids) override {
+  void Reset(const Array& env_ids, const Array* seeds = nullptr) override {
     TArray<int> tenv_ids(env_ids);
     int shared_offset = tenv_ids.Shape(0);
     std::vector<ActionSlice> actions(shared_offset);
+    const uint64_t* seed_ptr = nullptr;
+    if (seeds != nullptr && seeds->size == static_cast<std::size_t>(shared_offset)) {
+      seed_ptr = reinterpret_cast<const uint64_t*>(seeds->Data());
+    }
     for (int i = 0; i < shared_offset; ++i) {
       actions[i].force_reset = true;
       actions[i].env_id = tenv_ids[i];
       actions[i].order = is_sync_ ? i : -1;
+      if (seed_ptr != nullptr) {
+        actions[i].has_reset_seed = true;
+        actions[i].reset_seed = seed_ptr[i];
+      }
     }
     if (is_sync_) {
       stepping_env_num_ += shared_offset;

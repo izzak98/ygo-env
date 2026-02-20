@@ -22,8 +22,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstdint>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -244,10 +246,24 @@ class PyEnvPool : public EnvPool {
    * py api
    */
   void PyReset(const py::array& env_ids) {
-    // PyArray arr = PyArray::From<int>(env_ids);
     auto arr = NumpyToArrayIncRef<int>(env_ids);
     py::gil_scoped_release release;
-    EnvPool::Reset(arr);
+    EnvPool::Reset(arr, nullptr);
+  }
+
+  /**
+   * py api - reset with optional per-env seeds for reproducibility
+   */
+  void PyResetWithSeeds(const py::array& env_ids, const py::array& seeds) {
+    auto arr = NumpyToArrayIncRef<int>(env_ids);
+    py::array_t<uint64_t> seeds_arr = py::array_t<uint64_t>(seeds);
+    if (seeds_arr.size() != static_cast<py::ssize_t>(arr.size)) {
+      throw std::invalid_argument(
+          "seeds must have the same length as env_id");
+    }
+    auto seeds_array = NumpyToArrayIncRef<uint64_t>(seeds_arr);
+    py::gil_scoped_release release;
+    EnvPool::Reset(arr, &seeds_array);
   }
 };
 
@@ -281,7 +297,16 @@ py::object abc_meta = py::module::import("abc").attr("ABCMeta");
       .def_readonly("_spec", &ENVPOOL::py_spec)                      \
       .def("_recv", &ENVPOOL::PyRecv)                                \
       .def("_send", &ENVPOOL::PySend)                                \
-      .def("_reset", &ENVPOOL::PyReset)                              \
+      .def("_reset",                                                 \
+           [](ENVPOOL& self, const py::array& env_ids,               \
+              py::object seeds) {                                    \
+             if (seeds.is_none()) {                                  \
+               self.PyReset(env_ids);                                \
+             } else {                                                \
+               self.PyResetWithSeeds(env_ids, py::array(seeds));     \
+             }                                                       \
+           },                                                        \
+           py::arg("env_id"), py::arg("seeds") = py::none())         \
       .def_readonly_static("_state_keys", &ENVPOOL::py_state_keys)   \
       .def_readonly_static("_action_keys",                           \
                            &ENVPOOL::py_action_keys);                \

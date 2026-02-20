@@ -17,7 +17,9 @@
 #ifndef YGOENV_CORE_ENV_H_
 #define YGOENV_CORE_ENV_H_
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <random>
 #include <tuple>
 #include <type_traits>
@@ -159,10 +161,11 @@ class Env {
     }
   }
 
-  void EnvStep(StateBufferQueue* sbq, int order, bool reset) {
+  void EnvStep(StateBufferQueue* sbq, int order, bool reset,
+               std::optional<uint64_t> reset_seed = std::nullopt) {
     PreProcess(sbq, order, reset);
     if (reset) {
-      Reset();
+      Reset(reset_seed);
     } else {
       ParseAction();
       Step(Action(std::move(raw_action_)));
@@ -171,7 +174,10 @@ class Env {
     PostProcess();
   }
 
-  virtual void Reset() { throw std::runtime_error("reset not implemented"); }
+  virtual void Reset(std::optional<uint64_t> seed = std::nullopt) {
+    (void)seed;
+    throw std::runtime_error("reset not implemented");
+  }
   virtual void Step(const Action& action) {
     throw std::runtime_error("step not implemented");
   }

@@ -134,7 +134,8 @@ class DummyEnv : public Env<DummyEnvSpec> {
    * call `Allocate` to create the state (which is managed by envpool), and
    * populate it with the returning state.
    */
-  void Reset() override {
+  void Reset(std::optional<uint64_t> seed = std::nullopt) override {
+    (void)seed;
     state_ = 0;
     int num_players =
         max_num_players_ <= 1 ? 1 : state_ % (max_num_players_ - 1) + 1;

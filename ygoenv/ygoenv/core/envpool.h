@@ -45,7 +45,8 @@ class EnvPool {
   virtual std::vector<Array> Recv() {
     throw std::runtime_error("recv not implemented");
   }
-  virtual void Reset(const Array& env_ids) {
+  virtual void Reset(const Array& env_ids, const Array* seeds = nullptr) {
+    (void)seeds;
     throw std::runtime_error("reset not implemented");
   }
 };

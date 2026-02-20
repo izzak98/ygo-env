@@ -154,8 +154,10 @@ class EnvPool(Protocol):
     def _send(self, action: List[np.ndarray]) -> None:
         """Cpp private _send method."""
 
-    def _reset(self, env_id: np.ndarray) -> None:
-        """Cpp private _reset method."""
+    def _reset(
+        self, env_id: np.ndarray, seeds: Optional[np.ndarray] = None
+    ) -> None:
+        """Cpp private _reset method. Optionally pass seeds for reproducibility."""
 
     def _from(
         self,
