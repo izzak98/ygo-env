@@ -1984,6 +1984,8 @@ namespace ygopro
     int ms_max_ = 0;
     int ms_must_ = 0;
     std::vector<std::string> ms_specs_;
+    /** Parallel to ms_specs_: card ids from duel messages (e.g. MSG_SELECT_CARD codes). */
+    std::vector<CardId> ms_cids_;
     std::vector<std::vector<int>> ms_combs_;
     ankerl::unordered_dense::map<std::string, int> ms_spec2idx_;
     std::vector<int> ms_r_idxs_;
@@ -2280,6 +2282,7 @@ namespace ygopro
       ms_min_ = min;
       ms_max_ = max;
       ms_must_ = must;
+      ms_cids_.clear();
       ms_specs_ = specs;
       ms_r_idxs_.clear();
       ms_spec2idx_.clear();
@@ -2295,7 +2298,12 @@ namespace ygopro
         for (int j = 0; j < ms_specs_.size(); ++j)
         {
           const auto &spec = ms_specs_[j];
-          legal_actions_.push_back(LegalAction::from_spec(spec));
+          LegalAction la = LegalAction::from_spec(spec);
+          if (j < static_cast<int>(ms_cids_.size()) && ms_cids_[j] != 0)
+          {
+            la.cid_ = ms_cids_[j];
+          }
+          legal_actions_.push_back(la);
         }
       }
       else
@@ -2314,8 +2322,12 @@ namespace ygopro
         {
           if (ms_spec2idx_.find(ms_specs_[j]) != ms_spec2idx_.end())
           {
-            legal_actions_.push_back(
-                LegalAction::from_spec(ms_specs_[j]));
+            LegalAction la = LegalAction::from_spec(ms_specs_[j]);
+            if (j < static_cast<int>(ms_cids_.size()) && ms_cids_[j] != 0)
+            {
+              la.cid_ = ms_cids_[j];
+            }
+            legal_actions_.push_back(la);
           }
         }
         if (ms_idx_ == ms_max_ - 1)
@@ -2803,16 +2815,7 @@ namespace ygopro
       {
         auto &action = legal_actions_[i];
         action.msg_ = msg_;
-        const auto &spec = action.spec_;
-        if (!spec.empty())
-        {
-          const auto &spec_info = find_spec_info(spec_infos, spec);
-          action.spec_index_ = spec_info.index;
-          if (action.cid_ == 0)
-          {
-            action.cid_ = spec_info.cid;
-          }
-        }
+        _resolve_action_spec_index(spec_infos, action);
       }
 
       _set_obs_actions(state["obs:actions_"_], legal_actions_);
@@ -3203,6 +3206,52 @@ namespace ygopro
         return spec_infos[spec];
       }
       return it->second;
+    }
+
+    /** Prefer engine-reported card id (cid_) when pairing with obs slots; fixes spec↔card mismatches. */
+    void _resolve_action_spec_index(SpecInfos &spec_infos, LegalAction &action)
+    {
+      if (action.spec_.empty())
+      {
+        return;
+      }
+      if (action.cid_ != 0)
+      {
+        auto it = spec_infos.find(action.spec_);
+        if (it != spec_infos.end() && it->second.cid == action.cid_)
+        {
+          action.spec_index_ = it->second.index;
+          return;
+        }
+        const SpecInfo *fallback = nullptr;
+        for (const auto &[k, v] : spec_infos)
+        {
+          if (v.cid != action.cid_)
+          {
+            continue;
+          }
+          if (k == action.spec_)
+          {
+            action.spec_index_ = v.index;
+            return;
+          }
+          if (fallback == nullptr)
+          {
+            fallback = &v;
+          }
+        }
+        if (fallback != nullptr)
+        {
+          action.spec_index_ = fallback->index;
+          return;
+        }
+      }
+      const auto &spec_info = find_spec_info(spec_infos, action.spec_);
+      action.spec_index_ = spec_info.index;
+      if (action.cid_ == 0)
+      {
+        action.cid_ = spec_info.cid;
+      }
     }
 
     void _set_obs_action_spec(
@@ -5295,8 +5344,7 @@ namespace ygopro
         {
           for (int i = 0; i < size; ++i)
           {
-            dp_ += 4; // code
-            // loc is a u32, read as 4 bytes
+            auto code = read_u32();
             auto controller = read_u8();
             auto loc = read_u8();
             auto seq = read_u8();
@@ -5305,6 +5353,7 @@ namespace ygopro
             specs_for_ms.push_back(spec);
 
             LegalAction la = LegalAction::from_spec(spec);
+            la.cid_ = c_get_card_id(code);
             actions.push_back(la);
           }
         }
@@ -5334,6 +5383,12 @@ namespace ygopro
         ms_min_ = min;
         ms_max_ = max;
         ms_must_ = 0;
+        ms_cids_.clear();
+        ms_cids_.reserve(actions.size());
+        for (const auto &a : actions)
+        {
+          ms_cids_.push_back(a.cid_);
+        }
         ms_specs_ = specs_for_ms;
         ms_r_idxs_.clear();
         ms_spec2idx_.clear();
