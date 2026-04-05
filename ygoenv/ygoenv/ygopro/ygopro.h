@@ -1817,13 +1817,13 @@ namespace ygopro
     {
       int n_action_feats = 12;
       return MakeDict(
-          "obs:cards_"_.Bind(Spec<uint8_t>({conf["max_cards"_] * 2, 41})),
+          "obs:cards_"_.Bind(Spec<uint8_t>({conf["max_cards"_] * 2, 54})),
           "obs:global_"_.Bind(Spec<uint8_t>({23})),
           "obs:actions_"_.Bind(
               Spec<uint8_t>({conf["max_options"_], n_action_feats})),
           "obs:h_actions_"_.Bind(
               Spec<uint8_t>({conf["n_history_actions"_], n_action_feats + 2})),
-          "obs:mask_"_.Bind(Spec<uint8_t>({conf["max_cards"_] * 2, 14})),
+          "obs:mask_"_.Bind(Spec<uint8_t>({conf["max_cards"_] * 2, 27})),
           "info:num_options"_.Bind(Spec<int>({}, {0, conf["max_options"_] - 1})),
           "info:to_play"_.Bind(Spec<int>({}, {0, 1})),
           "info:is_selfplay"_.Bind(Spec<int>({}, {0, 1})),
@@ -3094,6 +3094,22 @@ namespace ygopro
         {
           f_cards(offset, 16 + j) = type_ids[j];
         }
+        // Pendulum scale 1–13 as one-hot (bytes 41–53). Printed L/R scales are
+        // symmetric on cards; OCG often reports 0 off Pendulum Zones — use DB.
+        uint32_t ls = c.lscale_;
+        uint32_t rs = c.rscale_;
+        if ((c.type_ & TYPE_PENDULUM) && ls == 0 && rs == 0)
+        {
+          const Card &db = c_get_card(c.code_);
+          ls = db.lscale_;
+          rs = db.rscale_;
+        }
+        uint32_t s = ls != 0 ? ls : rs;
+        for (int j = 0; j < 13; ++j)
+        {
+          f_cards(offset, 41 + j) =
+              static_cast<uint8_t>(s == static_cast<uint32_t>(j + 1) ? 1 : 0);
+        }
       }
     }
 
@@ -3156,6 +3172,10 @@ namespace ygopro
         mask(offset, 11) = 1;
         mask(offset, 12) = 1;
         mask(offset, 13) = 1;
+        for (int m = 14; m <= 26; ++m)
+        {
+          mask(offset, m) = 1;
+        }
       }
     }
 
@@ -3785,8 +3805,19 @@ namespace ygopro
       }
       c.attack_ = q_read_u32();
       c.defense_ = q_read_u32();
-      c.lscale_ = q_read_u32();
-      c.rscale_ = q_read_u32();
+      {
+        uint32_t qls = q_read_u32();
+        uint32_t qrs = q_read_u32();
+        if ((c.type_ & TYPE_PENDULUM) && qls == 0 && qrs == 0)
+        {
+          /* keep c.lscale_, c.rscale_ from c_get_card; OCG returns 0 off Pendulum Zones */
+        }
+        else
+        {
+          c.lscale_ = qls;
+          c.rscale_ = qrs;
+        }
+      }
       uint32_t link = q_read_u32();
       uint32_t link_marker = q_read_u32();
       if ((link & 0xff) > 0)
@@ -3880,8 +3911,19 @@ namespace ygopro
         }
 
         c.status_ = q_read_u32();
-        c.lscale_ = q_read_u32();
-        c.rscale_ = q_read_u32();
+        {
+          uint32_t qls = q_read_u32();
+          uint32_t qrs = q_read_u32();
+          if ((c.type_ & TYPE_PENDULUM) && qls == 0 && qrs == 0)
+          {
+            /* keep c.lscale_, c.rscale_ from c_get_card */
+          }
+          else
+          {
+            c.lscale_ = qls;
+            c.rscale_ = qrs;
+          }
+        }
 
         uint32_t link = q_read_u32();
         uint32_t link_marker = q_read_u32();
