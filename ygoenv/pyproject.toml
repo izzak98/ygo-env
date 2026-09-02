@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ygoenv"
+version = "0.8.4"
+description = "Gymnasium-compatible Yu-Gi-Oh! environment (EnvPool + YGOPro)"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "dm-env",
+  "gym>=0.26",
+  "gymnasium>=0.26,!=0.27.0",
+  "optree>=0.6.0",
+  "packaging",
+  "numba>=0.62.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["ygoenv*"]
+
+[tool.setuptools.cmdclass]
+build_py = "build_native.BuildPyWithNative"
+editable_wheel = "build_native.EditableWheelWithNative"
+
+[tool.setuptools.package-data]
+"ygoenv.ygopro" = ["*.so"]

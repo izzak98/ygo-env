@@ -24,6 +24,12 @@ from ygoenv.registration import (
     register,
 )
 
+
+from ygoenv.paths import get_repo_root, deck_path, cards_db, code_list_path
+from ygoenv.init import init_ygopro
+from ygoenv.modes import GameMode, OpponentMode, ModeConfig
+from ygoenv.wrapper import YGOEnv
+
 __version__ = "0.8.4"
 __all__ = [
     "register",
@@ -33,4 +39,13 @@ __all__ = [
     "make_gymnasium",
     "make_spec",
     "list_all_envs",
+    "get_repo_root",
+    "deck_path",
+    "cards_db",
+    "code_list_path",
+    "init_ygopro",
+    "GameMode",
+    "OpponentMode",
+    "ModeConfig",
+    "YGOEnv",
 ]

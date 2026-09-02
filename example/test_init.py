@@ -1,83 +1,45 @@
-# example/test_init.py
-import ygoenv
-import sys
+# example/test_init.py — smoke test for ygoenv high-level wrapper
 import os
 import random
+import sys
+
 import numpy as np
 
+from ygoenv import GameMode, YGOEnv
+from ygoenv.paths import code_list_path, deck_path, get_repo_root
 
-# Import the initialization function
-from utils import init_ygopro
+ROOT = get_repo_root()
+os.chdir(ROOT)
 
-# Set up paths
-env_id = "YGOPro-v1"
-lang = "english"
-deck = "assets/deck/Voiceless.ydk"
-code_list_file = "example/code_list.txt"
+deck = deck_path("tear")
+code_list = code_list_path()
 
-print(f"Current directory: {os.getcwd()}")
-print(f"Checking paths:")
-print(f"  Deck path exists: {os.path.exists(deck)}")
-print(f"  Code list exists: {os.path.exists(code_list_file)}")
-print(f"  Assets path: {os.path.abspath('assets')}")
-print(f"  Cards.cdb exists: {os.path.exists('assets/cards.cdb')}")
-
-# Initialize YGOPro - this is crucial!
-try:
-    deck_result, deck_names = init_ygopro(
-        env_id, lang, deck, code_list_file, return_deck_names=True
-    )
-    print(f"Init successful! Deck: {deck_result}")
-    print(f"Deck names: {deck_names}")
-except Exception as e:
-    print(f"Init failed: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-
-# Now try to create the environment with proper initialization
+print(f"Repo root: {ROOT}")
+print(f"Deck exists: {deck.exists()}")
+print(f"Code list exists: {code_list.exists()}")
 
 seed = 2711989
 random.seed(seed)
 np.random.seed(seed)
 
-print("\nCreating environment...")
-try:
-    # Use the initialized deck
-    envs = ygoenv.make(
-        task_id=env_id,
-        env_type="gymnasium",
-        num_envs=1,
-        num_threads=1,
-        seed=seed,
-        deck1=deck_result,  # Use the result from init_ygopro
-        deck2=deck_result,  # Use the result from init_ygopro
-        player=-1,
-        max_options=24,
-        n_history_actions=32,
-        play_mode='self',
-        async_reset=False,
-        verbose=True,
-        record=False,
-    )
-    print("Environment created successfully!")
+for mode in (GameMode.BOARD_SETUP, GameMode.PLAY_VS_OPPONENT):
+    print(f"\n--- {mode.value} ---")
+    try:
+        env = YGOEnv(
+            mode=mode,
+            deck="tear",
+            num_envs=1,
+            seed_mode="full_det",
+            base_seed=seed,
+            verbose=(mode == GameMode.BOARD_SETUP),
+        )
+        obs = env.reset()
+        print(f"Reset OK, cards shape: {obs['cards_'].shape}")
+        env.close()
+    except Exception as e:
+        print(f"Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
-    # Try to reset
-    obs, infos = envs.reset()
-    print("Reset successful!")
-    print(f"Observation shape: {obs['cards_'].shape if 'cards_' in obs else 'N/A'}")
-    print(f"To play: {infos['to_play']}")
-
-    # Try a single step
-    print("\nTrying a step...")
-    while True:
-        actions = np.array([0])
-        a = envs.step(actions)
-        # print("env output:\n", a)
-        print("Step successful!")
-        break
-
-except Exception as e:
-    print(f"Environment creation/usage failed: {e}")
-    import traceback
-    traceback.print_exc()
+print("\nAll modes OK")
