@@ -41,8 +41,8 @@ def resolve_mode_config(
     """Map a :class:`GameMode` to engine configuration."""
     if mode == GameMode.BOARD_SETUP:
         return ModeConfig(
-            play_mode="self",
-            player=-1,
+            play_mode="board",
+            player=0,
             use_deck_rewards=True,
             greedy_reward=False,
         )
@@ -92,6 +92,7 @@ def make_env_kwargs(
         "record": False,
         "oppo_info": True,
         "greedy_reward": cfg.greedy_reward,
+        "use_deck_rewards": cfg.use_deck_rewards,
     }
     if seed is not None:
         out["seed"] = seed

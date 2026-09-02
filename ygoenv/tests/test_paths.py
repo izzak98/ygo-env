@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ygoenv.paths import cards_db, code_list_path, deck_path, get_repo_root
+from ygoenv.paths import cards_db, code_list_path, deck_path, get_repo_root, scripts_path
 
 
 def test_repo_root_is_ygo_env():
@@ -21,3 +21,9 @@ def test_code_list_path():
 
 def test_cards_db_default_en():
     assert cards_db("en").parts[-3:] == ("locale", "en", "cards.cdb")
+
+
+def test_scripts_path_is_ygopro_scripts():
+    p = scripts_path()
+    assert p.name == "ygopro-scripts"
+    assert p.parent.name == "third_party"

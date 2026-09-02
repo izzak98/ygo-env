@@ -12,13 +12,13 @@ from setuptools.command.editable_wheel import editable_wheel
 
 
 def ygo_env_root() -> Path:
-    """Return the ``ygo-env`` git submodule root."""
-    return Path(__file__).resolve().parent.parent
-
-
-def workspace_root() -> Path:
-    """Return the top-level training repo root (parent of ``ygo-env``)."""
-    return ygo_env_root().parent
+    """Return the ygo-env repository root (directory containing ``assets/``)."""
+    here = Path(__file__).resolve().parent
+    # ygoenv/build_native.py → parents[1] == repo root when this file lives in ygoenv/
+    for ancestor in [here, *here.parents]:
+        if (ancestor / "assets" / "deck").is_dir():
+            return ancestor
+    return here.parent
 
 
 def native_extension_path() -> Path:
@@ -52,23 +52,6 @@ def build_extension(*, force: bool = False) -> None:
     print(f"Built native extension: {built[0]}", file=sys.stderr)
 
 
-def ensure_script_symlink() -> None:
-    """Ensure ``/workspace/script`` → ygo-env Lua scripts (engine loads ``./script/``)."""
-    ws = workspace_root()
-    link = ws / "script"
-    if link.is_symlink() or link.exists():
-        return
-
-    scripts_dir = ygo_env_root() / "third_party" / "ygopro-scripts"
-    if not scripts_dir.is_dir():
-        print("Fetching ygopro-scripts via make -C ygo-env scripts …", file=sys.stderr)
-        subprocess.check_call(["make", "scripts"], cwd=ygo_env_root())
-
-    target = Path("ygo-env/third_party/ygopro-scripts")
-    link.symlink_to(target, target_is_directory=True)
-    print(f"Created script symlink: {link} -> {target}", file=sys.stderr)
-
-
 def prepare_runtime_assets() -> None:
     """Best-effort fetch of card DB + scripts if missing."""
     ygo = ygo_env_root()
@@ -86,7 +69,6 @@ class BuildPyWithNative(build_py):
     def run(self) -> None:
         prepare_runtime_assets()
         build_extension()
-        ensure_script_symlink()
         super().run()
 
 
@@ -96,5 +78,4 @@ class EditableWheelWithNative(editable_wheel):
     def run(self) -> None:
         prepare_runtime_assets()
         build_extension()
-        ensure_script_symlink()
         super().run()

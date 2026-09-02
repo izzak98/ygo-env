@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -14,7 +16,9 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
+#include <sstream>
 
 
 #include <fmt/core.h>
@@ -33,6 +37,7 @@
 #include "ygopro-core/card_data.h"
 #include "ygopro-core/duel.h"
 #include "ygopro-core/ocgapi.h"
+#include "rewards.h"
 
 // clang-format on
 
@@ -1442,6 +1447,12 @@ namespace ygopro
       extra_decks_;
   static std::vector<std::string> deck_names_;
   static ankerl::unordered_dense::map<std::string, int> deck_names_ids_;
+  static std::mutex module_mu_;
+  static std::mutex script_mu_;
+  static bool module_inited_ = false;
+  static std::string script_dir_;
+  static constexpr CardCode kDummyCardCode = 91731841;
+  static constexpr const char *kDummyDeckName = "_dummy";
 
   inline const Card &c_get_card(CardCode code)
   {
@@ -1559,6 +1570,29 @@ namespace ygopro
     return 0;
   }
 
+  inline std::string script_file_from_engine_name(const std::string &name)
+  {
+    std::string filename = name;
+    const std::string prefixes[] = {"./script/", "script/"};
+    for (const auto &p : prefixes)
+    {
+      if (filename.rfind(p, 0) == 0)
+      {
+        filename = filename.substr(p.size());
+        break;
+      }
+    }
+    if (script_dir_.empty())
+    {
+      return name;
+    }
+    if (script_dir_.back() == '/' || script_dir_.back() == '\\')
+    {
+      return script_dir_ + filename;
+    }
+    return script_dir_ + "/" + filename;
+  }
+
   inline byte *read_card_script(const std::string &path, int *lenptr)
   {
     std::ifstream file(path, std::ios::binary);
@@ -1579,90 +1613,118 @@ namespace ygopro
   inline byte *script_reader_callback(const char *name, int *lenptr)
   {
     std::string path(name);
+    std::lock_guard<std::mutex> lock(script_mu_);
     auto it = cards_script_.find(path);
-    if (it == cards_script_.end())
+    if (it != cards_script_.end())
     {
-      fmt::println("[script_reader_callback] Script not found: " + path);
-      throw std::runtime_error("[script_reader_callback] Script not found: " + path);
+      *lenptr = it->second.len;
+      return it->second.buf;
     }
-    *lenptr = it->second.len;
-    return it->second.buf;
+    std::string file = script_file_from_engine_name(path);
+    byte *buf = read_card_script(file, lenptr);
+    cards_script_[path] = {buf, *lenptr};
+    return buf;
+  }
+
+  inline void register_deck_file(const std::string &name, const std::string &deck)
+  {
+    if (main_decks_.find(name) != main_decks_.end())
+    {
+      return;
+    }
+    auto [main_deck, extra_deck, side_deck] = read_decks(deck);
+    main_decks_[name] = main_deck;
+    extra_decks_[name] = extra_deck;
+    if (!name.empty() && name[0] != '_')
+    {
+      if (deck_names_ids_.find(name) == deck_names_ids_.end())
+      {
+        deck_names_.push_back(name);
+        deck_names_ids_[name] = static_cast<int>(deck_names_.size() - 1);
+      }
+    }
+    sort_extra_deck(extra_decks_[name]);
+  }
+
+  inline void register_dummy_deck()
+  {
+    if (main_decks_.find(kDummyDeckName) != main_decks_.end())
+    {
+      return;
+    }
+    std::vector<CardCode> main(40, kDummyCardCode);
+    main_decks_[kDummyDeckName] = main;
+    extra_decks_[kDummyDeckName] = {};
   }
 
   static void init_module(const std::string &db_path,
                           const std::string &code_list_file,
-                          const std::map<std::string, std::string> &decks)
+                          const std::map<std::string, std::string> &decks,
+                          const std::string &script_dir = "",
+                          const std::string &reward_json = "")
   {
-    // parse code from code_list_file
-    SQLite::Database db(db_path, SQLite::OPEN_READONLY);
+    std::lock_guard<std::mutex> lock(module_mu_);
 
-    auto start = std::chrono::steady_clock::now();
-
-    std::ifstream file(code_list_file);
-    std::string line;
-    int i = 0;
-    CardCode code;
-    int has_script, script_len;
-    while (std::getline(file, line))
+    if (!script_dir.empty())
     {
-      i++;
-      std::istringstream iss(line);
-      if (!(iss >> code >> has_script))
-      {
-        std::cerr << "Failed to parse line in code_list: " << line << std::endl;
-        continue;
-      }
-      card_ids_[code] = i;
-      cards_[code] = db_query_card(db, code);
-      cards_data_[code] = db_query_card_data(db, code);
-      if (has_script)
-      {
-        std::string path = "./script/c" + std::to_string(code) + ".lua";
-        byte *buf = read_card_script(path, &script_len);
-        cards_script_[path] = {buf, script_len};
-      }
+      script_dir_ = script_dir;
     }
 
-    auto end = std::chrono::steady_clock::now();
-    auto milliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-            .count();
-    // fmt::println("load {} cards in {}ms", cards_data_.size(), milliseconds);
+    if (!module_inited_)
+    {
+      SQLite::Database db(db_path, SQLite::OPEN_READONLY);
+
+      std::ifstream file(code_list_file);
+      std::string line;
+      int i = 0;
+      CardCode code;
+      int has_script;
+      while (std::getline(file, line))
+      {
+        i++;
+        std::istringstream iss(line);
+        if (!(iss >> code >> has_script))
+        {
+          std::cerr << "Failed to parse line in code_list: " << line << std::endl;
+          continue;
+        }
+        card_ids_[code] = i;
+        cards_[code] = db_query_card(db, code);
+        cards_data_[code] = db_query_card_data(db, code);
+      }
+
+      card_data card;
+      cards_data_[0] = card;
+
+      int script_len = 0;
+      std::vector<std::string> preload = {
+          "./script/constant.lua",
+          "./script/utility.lua",
+          "./script/procedure.lua",
+      };
+      for (const auto &path : preload)
+      {
+        std::string file_path = script_file_from_engine_name(path);
+        byte *buf = read_card_script(file_path, &script_len);
+        cards_script_[path] = {buf, script_len};
+      }
+      cards_script_["./script/c0.lua"] = {nullptr, 0};
+
+      set_card_reader(card_reader_callback);
+      set_script_reader(script_reader_callback);
+      register_dummy_deck();
+      module_inited_ = true;
+    }
 
     for (const auto &[name, deck] : decks)
     {
-      auto [main_deck, extra_deck, side_deck] = read_decks(deck);
-      main_decks_[name] = main_deck;
-      extra_decks_[name] = extra_deck;
-      if (name[0] != '_')
-      {
-        deck_names_.push_back(name);
-        deck_names_ids_[name] = deck_names_.size() - 1;
-      }
+      register_deck_file(name, deck);
     }
 
-    for (auto &[name, deck] : extra_decks_)
+    if (!reward_json.empty())
     {
-      sort_extra_deck(deck);
+      load_reward_json(reward_json);
     }
-
-    card_data card;
-    cards_data_[0] = card;
-
-    std::vector<std::string> preload = {
-        "./script/constant.lua",
-        "./script/utility.lua",
-        "./script/procedure.lua",
-    };
-    for (const auto &path : preload)
-    {
-      byte *buf = read_card_script(path, &script_len);
-      cards_script_[path] = {buf, script_len};
-    }
-    cards_script_["./script/c0.lua"] = {nullptr, 0};
-
-    set_card_reader(card_reader_callback);
-    set_script_reader(script_reader_callback);
   }
 
   inline std::string getline()
@@ -1809,7 +1871,8 @@ namespace ygopro
                       "verbose"_.Bind(false), "max_options"_.Bind(16),
                       "max_cards"_.Bind(80), "n_history_actions"_.Bind(16),
                       "record"_.Bind(false), "async_reset"_.Bind(false),
-                      "greedy_reward"_.Bind(true), "timeout"_.Bind(600),
+                      "greedy_reward"_.Bind(true), "use_deck_rewards"_.Bind(false),
+                      "timeout"_.Bind(600),
                       "oppo_info"_.Bind(false), "max_steps"_.Bind(1000));
     }
     template <typename Config>
@@ -1849,6 +1912,7 @@ namespace ygopro
     kSelfPlay,
     kRandomBot,
     kGreedyBot,
+    kBoardSetup,
     kCount
   };
 
@@ -1871,6 +1935,10 @@ namespace ygopro
       else if (token == "bot")
       {
         modes.push_back(kGreedyBot);
+      }
+      else if (token == "board")
+      {
+        modes.push_back(kBoardSetup);
       }
       else if (token == "random")
       {
@@ -1940,6 +2008,7 @@ namespace ygopro
     PlayerId winner_;
     uint8_t win_reason_;
     const bool greedy_reward_;
+    const bool use_deck_rewards_;
 
     int lp_[2];
 
@@ -2019,7 +2088,8 @@ namespace ygopro
           play_modes_(parse_play_modes(spec.config["play_mode"_])),
           verbose_(spec.config["verbose"_]), record_(spec.config["record"_]),
           n_history_actions_(spec.config["n_history_actions"_]),
-          greedy_reward_(spec.config["greedy_reward"_])
+          greedy_reward_(spec.config["greedy_reward"_]),
+          use_deck_rewards_(spec.config["use_deck_rewards"_])
     {
       if (record_)
       {
@@ -2116,7 +2186,11 @@ namespace ygopro
         play_mode_ = play_modes_[0];
       }
 
-      if (play_mode_ != kSelfPlay)
+      if (play_mode_ == kBoardSetup)
+      {
+        ai_player_ = (player_ < 0) ? 0 : player_;
+      }
+      else if (play_mode_ != kSelfPlay)
       {
         if (player_ == -1)
         {
@@ -2585,6 +2659,101 @@ namespace ygopro
       }
     }
 
+    RewardCard make_reward_card(const Card &c) const
+    {
+      RewardCard rc;
+      rc.card_id = std::to_string(c.code_);
+      uint8_t location = c.location_;
+      bool overlay = location & LOCATION_OVERLAY;
+      if (overlay)
+      {
+        location = location & 0x7f;
+      }
+      auto loc_it = location2str.find(location);
+      rc.location = loc_it == location2str.end() ? std::string() : loc_it->second;
+      rc.overlay = overlay;
+      if (overlay)
+      {
+        rc.position = "face-up";
+      }
+      else if (location == LOCATION_DECK || location == LOCATION_HAND ||
+               location == LOCATION_EXTRA)
+      {
+        if (c.position_ & POS_FACEDOWN)
+        {
+          rc.position = "face-down";
+        }
+        else
+        {
+          rc.position = position_to_string(c.position_);
+        }
+      }
+      else
+      {
+        rc.position = position_to_string(c.position_);
+      }
+      if (location == LOCATION_MZONE || location == LOCATION_SZONE ||
+          location == LOCATION_GRAVE)
+      {
+        rc.seq = static_cast<int>(c.sequence_) + 1;
+      }
+      rc.negated = (c.status_ & (STATUS_DISABLED | STATUS_FORBIDDEN)) != 0;
+      rc.level = static_cast<int>(c.level_);
+      auto race_it = race2str.find(c.race_);
+      if (race_it != race2str.end())
+      {
+        rc.race = race_it->second;
+      }
+      else
+      {
+        for (const auto &[k, v] : race2str)
+        {
+          if (k != 0 && (c.race_ & k))
+          {
+            rc.race = v;
+            break;
+          }
+        }
+      }
+      for (const auto &[k, v] : type2str)
+      {
+        if (c.type_ & k)
+        {
+          rc.types.push_back(v);
+        }
+      }
+      return rc;
+    }
+
+    std::vector<RewardCard> collect_reward_cards()
+    {
+      std::vector<RewardCard> out;
+      if (!duel_started_ || pduel_ == 0)
+      {
+        return out;
+      }
+      const uint8_t locs[] = {
+          LOCATION_DECK, LOCATION_HAND, LOCATION_MZONE, LOCATION_SZONE,
+          LOCATION_GRAVE, LOCATION_REMOVED, LOCATION_EXTRA,
+      };
+      for (PlayerId p = 0; p < 2; p++)
+      {
+        for (uint8_t loc : locs)
+        {
+          for (const auto &c : get_cards_in_location(p, loc))
+          {
+            out.push_back(make_reward_card(c));
+          }
+        }
+      }
+      return out;
+    }
+
+    float current_deck_reward()
+    {
+      return evaluate_deck_reward(deck_name_[0], collect_reward_cards());
+    }
+
     void step(int idx)
     {
       callback_(idx);
@@ -2728,7 +2897,18 @@ namespace ygopro
       // if (step_time_count_ % 3000 == 0) {
       //   fmt::println("Step time: {:.3f}", step_time_ * 1000);
       // }
-      ret_reward_ = reward;
+      if (use_deck_rewards_)
+      {
+        if (duel_started_)
+        {
+          ret_reward_ = current_deck_reward();
+        }
+        // else: value already stored in _duel_end before the duel was destroyed
+      }
+      else
+      {
+        ret_reward_ = reward;
+      }
       ret_win_reason_ = reason;
     }
 
@@ -3613,6 +3793,10 @@ namespace ygopro
         intptr_t pduel, PlayerId player, std::mt19937 &gen, bool shuffle = true) const
     {
       std::string deck_name = player == 0 ? deck1_ : deck2_;
+      if (deck_name.empty() || deck_name == "none")
+      {
+        deck_name = kDummyDeckName;
+      }
 
       if (deck_name == "random")
       {
@@ -6533,6 +6717,10 @@ namespace ygopro
 
     void _duel_end(uint8_t player, uint8_t reason)
     {
+      if (use_deck_rewards_ && duel_started_ && pduel_ != 0)
+      {
+        ret_reward_ = current_deck_reward();
+      }
       winner_ = player;
       win_reason_ = reason;
       YGO_EndDuel(pduel_);

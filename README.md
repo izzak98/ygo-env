@@ -42,8 +42,9 @@ make
 
 This will:
 * Download card databases and text files into `assets/locale/en` and `assets/locale/zh`.
-* Clone official scripts into `third_party/ygopro-scripts` and link them to `scripts/script`.
-NOTE: When you run code that interacts with the environment, for the lua scripts to work a symlink to `third_party/ygopro-scripts` must be in the directory you run the code from. 
+* Clone official scripts into `third_party/ygopro-scripts`.
+Lua scripts are loaded from that directory by the C++ engine (no CWD `script/` symlink required).
+
 ### 4. Quick validation
 
 ```bash
@@ -66,7 +67,6 @@ See `example/test_init.py`.
 ```
 ygo-env/
 ├── assets/                # Card databases and decks
-├── scripts/               # Symlink to ygopro-scripts
 ├── ygoenv/                # Python package
 │   ├── ygoenv/ygopro/     # C++ bindings and wrappers
 │   └── python/            # Gymnasium and DM wrappers

@@ -144,6 +144,21 @@ class RewardRule:
                 "Use nested rules or restructure the condition."
             )
 
+    @staticmethod
+    def _flatten_conditions(items) -> list["CardCondition"]:
+        if items is None:
+            return []
+        flat: list[CardCondition] = []
+        stack = [items]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, CardCondition):
+                flat.append(current)
+                continue
+            if isinstance(current, (list, tuple, set)):
+                stack.extend(current)
+        return flat
+
     def to_dict(self) -> dict:
         """Convert to the legacy JSON format."""
         result = self.target.to_dict()
@@ -153,12 +168,12 @@ class RewardRule:
         if self.requires_any:
             result["further_conditions"] = {
                 "logic": "OR",
-                "conditions": [c.to_dict() for c in self.requires_any],
+                "conditions": [c.to_dict() for c in self._flatten_conditions(self.requires_any)],
             }
         elif self.requires_all:
             result["further_conditions"] = {
                 "logic": "AND",
-                "conditions": [c.to_dict() for c in self.requires_all],
+                "conditions": [c.to_dict() for c in self._flatten_conditions(self.requires_all)],
             }
         else:
             result["further_conditions"] = {}
@@ -169,13 +184,13 @@ class RewardRule:
         if self.requires_min_combined_count is not None:
             conditions, min_total = self.requires_min_combined_count
             result["min_combined_count"] = {
-                "conditions": [c.to_dict() for c in conditions],
+                "conditions": [c.to_dict() for c in self._flatten_conditions(conditions)],
                 "min": min_total,
             }
         if self.requires_exact_combined_count is not None:
             conditions, exact_total = self.requires_exact_combined_count
             result["exact_combined_count"] = {
-                "conditions": [c.to_dict() for c in conditions],
+                "conditions": [c.to_dict() for c in self._flatten_conditions(conditions)],
                 "exact": exact_total,
             }
 

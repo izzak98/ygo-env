@@ -97,27 +97,33 @@ class YGOEnv:
             deck_names_in = list(deck)
 
         self._deck_names_per_env = deck_names_in
-        self._envs: List[Any] = [None] * num_envs
-        obs_list: List[Optional[dict]] = [None] * num_envs
-
-        def _init_single(i: int) -> None:
-            player_deck = deck_path(deck_names_in[i])
-            player_name, registered = init_ygopro(
-                player_deck,
-                opponent_deck=opponent_deck,
-                db_path=db,
-                return_deck_names=True,
-            )
+        unique_decks = list(dict.fromkeys(deck_names_in))
+        skip_opponent = self.mode == GameMode.BOARD_SETUP
+        player_name, registered = init_ygopro(
+            [deck_path(d) for d in unique_decks],
+            opponent_deck=None if skip_opponent else opponent_deck,
+            db_path=db,
+            return_deck_names=True,
+        )
+        if skip_opponent:
+            opp_name = "_dummy"
+        else:
             opp_stem = Path(opponent_deck).stem
             if opp_stem in registered:
                 opp_name = opp_stem
             else:
                 others = [n for n in registered if n != player_name]
                 opp_name = others[0] if others else player_name
+
+        self._envs: List[Any] = [None] * num_envs
+        obs_list: List[Optional[dict]] = [None] * num_envs
+
+        def _init_single(i: int) -> None:
+            player_deck_name = Path(deck_names_in[i]).stem
             if self.mode == GameMode.PLAY_VS_OPPONENT:
-                deck1, deck2 = player_name, opp_name
+                deck1, deck2 = player_deck_name, opp_name
             else:
-                deck1, deck2 = player_name, opp_name
+                deck1, deck2 = player_deck_name, opp_name
 
             seed_kw: dict = {}
             if self._seed_mode == SEED_MODE_FULL_DET:

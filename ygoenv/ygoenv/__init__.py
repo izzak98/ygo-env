@@ -25,7 +25,7 @@ from ygoenv.registration import (
 )
 
 
-from ygoenv.paths import get_repo_root, deck_path, cards_db, code_list_path
+from ygoenv.paths import get_repo_root, deck_path, cards_db, code_list_path, scripts_path
 from ygoenv.init import init_ygopro
 from ygoenv.modes import GameMode, OpponentMode, ModeConfig
 from ygoenv.wrapper import YGOEnv
@@ -43,6 +43,7 @@ __all__ = [
     "deck_path",
     "cards_db",
     "code_list_path",
+    "scripts_path",
     "init_ygopro",
     "GameMode",
     "OpponentMode",

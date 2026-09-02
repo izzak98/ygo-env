@@ -4,6 +4,7 @@ from .ygopro_ygoenv import (
     _YGOProEnvPool,
     _YGOProEnvSpec,
     init_module,
+    load_reward_json,
 )
 
 (
@@ -19,4 +20,6 @@ __all__ = [
     "YGOProDMEnvPool",
     "YGOProGymEnvPool",
     "YGOProGymnasiumEnvPool",
+    "init_module",
+    "load_reward_json",
 ]
