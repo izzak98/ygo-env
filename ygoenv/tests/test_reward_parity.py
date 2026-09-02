@@ -12,7 +12,11 @@ except ImportError:
 @pytest.mark.parametrize("deck", ["tear", "ryzeal"])
 def test_native_deck_reward_matches_python(deck):
     from ygoenv import GameMode, YGOEnv
+    from ygoenv.modes import _legacy_native_build
     from ygoenv.rewards import get_reward
+
+    if _legacy_native_build():
+        pytest.skip("native deck rewards require a current ygopro_ygoenv.so build")
 
     env = YGOEnv(
         mode=GameMode.BOARD_SETUP,

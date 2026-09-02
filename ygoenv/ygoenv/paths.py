@@ -73,3 +73,18 @@ def scripts_path() -> Path:
     if override:
         return Path(override)
     return get_repo_root() / "third_party" / "ygopro-scripts"
+
+
+def embeddings_path() -> Path:
+    """Path to ``embeddings.json`` (training-repo root or explicit override)."""
+    override = os.getenv("YGO_EMBEDDINGS_PATH")
+    if override:
+        return Path(override)
+
+    # Monorepo: training repo root is parent of ygo-env/
+    ygo_root = get_repo_root()
+    for candidate in [ygo_root.parent / "embeddings.json", Path.cwd() / "embeddings.json"]:
+        if candidate.is_file():
+            return candidate
+
+    return Path.cwd() / "embeddings.json"

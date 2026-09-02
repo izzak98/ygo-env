@@ -13,7 +13,7 @@ import numpy as np
 import ygoenv as ygoenv_lowlevel
 from ygoenv.decoding import DoubleSliceableRecord, decode_all_batch
 from ygoenv.init import init_ygopro
-from ygoenv.modes import GameMode, OpponentMode, make_env_kwargs, resolve_mode_config
+from ygoenv.modes import GameMode, OpponentMode, make_env_kwargs, resolve_mode_config, _legacy_native_build
 from ygoenv.paths import cards_db, deck_path
 
 DEFAULT_MAX_CARDS = 80
@@ -98,14 +98,17 @@ class YGOEnv:
 
         self._deck_names_per_env = deck_names_in
         unique_decks = list(dict.fromkeys(deck_names_in))
-        skip_opponent = self.mode == GameMode.BOARD_SETUP
+        skip_opponent = self.mode == GameMode.BOARD_SETUP and not _legacy_native_build()
         player_name, registered = init_ygopro(
             [deck_path(d) for d in unique_decks],
             opponent_deck=None if skip_opponent else opponent_deck,
             db_path=db,
             return_deck_names=True,
         )
-        if skip_opponent:
+        if self.mode == GameMode.BOARD_SETUP and _legacy_native_build():
+            opp_stem = Path(opponent_deck).stem
+            opp_name = opp_stem if opp_stem in registered else "garnet"
+        elif skip_opponent:
             opp_name = "_dummy"
         else:
             opp_stem = Path(opponent_deck).stem

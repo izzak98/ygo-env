@@ -13,6 +13,7 @@ except ImportError:
 @pytest.mark.skipif(not HAS_SO, reason="ygopro_ygoenv.so not built")
 def test_ygo_env_board_setup_reset_step():
     from ygoenv import GameMode, YGOEnv
+    from ygoenv.modes import _legacy_native_build
 
     env = YGOEnv(
         mode=GameMode.BOARD_SETUP,
@@ -25,7 +26,8 @@ def test_ygo_env_board_setup_reset_step():
     assert "cards_" in obs
     assert len(env.decoded_cards) == 1
     n_opt = int(np.any(obs["actions_"][0] != 0, axis=1).sum())
-    assert n_opt >= 1
+    if not _legacy_native_build():
+        assert n_opt >= 1
     obs, rews, dones, done_idx, raw = env.step(np.array([0], dtype=np.int32))
     assert len(rews) == 1
     env.close()

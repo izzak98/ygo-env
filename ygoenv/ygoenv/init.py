@@ -79,13 +79,21 @@ def init_ygopro(
             raise FileNotFoundError(f"Token deck not found: {token_deck}")
         decks["_tokens"] = str(token_deck)
 
-    init_module(
-        str(db),
-        str(cl),
-        decks,
-        str(scripts),
-        json.dumps(export_to_json()),
-    )
+    reward_json = json.dumps(export_to_json())
+    try:
+        init_module(
+            str(db),
+            str(cl),
+            decks,
+            str(scripts),
+            reward_json,
+        )
+    except TypeError:
+        # Older ygopro_ygoenv.so builds only accept (db, code_list, decks).
+        init_module(str(db), str(cl), decks)
+        from ygoenv.ygopro import load_reward_json
+
+        load_reward_json(reward_json)
 
     if return_deck_names:
         names = [n for n in decks.keys() if n != "_tokens"]
