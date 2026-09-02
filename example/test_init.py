@@ -1,5 +1,4 @@
 # example/test_init.py — smoke test for ygoenv high-level wrapper
-import os
 import random
 import sys
 
@@ -9,12 +8,12 @@ from ygoenv import GameMode, YGOEnv
 from ygoenv.paths import code_list_path, deck_path, get_repo_root
 
 ROOT = get_repo_root()
-os.chdir(ROOT)
 
 deck = deck_path("tear")
 code_list = code_list_path()
 
 print(f"Repo root: {ROOT}")
+print(f"CWD is not required to be repo root")
 print(f"Deck exists: {deck.exists()}")
 print(f"Code list exists: {code_list.exists()}")
 
