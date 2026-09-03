@@ -1893,11 +1893,12 @@ namespace ygopro
                       "verbose"_.Bind(false), "max_options"_.Bind(16),
                       "max_cards"_.Bind(80), "n_history_actions"_.Bind(16),
                       "record"_.Bind(false), "async_reset"_.Bind(false),
-                      "greedy_reward"_.Bind(true), "use_deck_rewards"_.Bind(false),
                       "timeout"_.Bind(600),
                       "oppo_info"_.Bind(false), "max_steps"_.Bind(1000),
                       "obs_format"_.Bind(std::string("raw")),
-                      "opening_hand"_.Bind(std::string("")));
+                      "opening_hand"_.Bind(std::string("")),
+                      "reward_mode"_.Bind(std::string("duel")),
+                      "episode_done_mode"_.Bind(std::string("duel")));
     }
     template <typename Config>
     static decltype(auto) StateSpec(const Config &conf)
@@ -2164,9 +2165,15 @@ namespace ygopro
 
     PlayerId winner_;
     uint8_t win_reason_;
-    const bool greedy_reward_;
-    const bool use_deck_rewards_;
     const bool obs_format_vectorized_;
+    const std::string reward_mode_;
+    const std::string episode_done_mode_;
+
+    // Per-episode state for shaped_first_credit reward mode
+    std::unordered_map<std::string, float> claimed_rules_;
+    bool last_action_was_termination_ = false;
+    int episode_start_turn_ = 0;
+    float pre_captured_deck_reward_ = 0.f; // captured in _duel_end before board is destroyed
 
     int lp_[2];
 
@@ -2247,8 +2254,8 @@ namespace ygopro
           play_modes_(parse_play_modes(spec.config["play_mode"_])),
           verbose_(spec.config["verbose"_]), record_(spec.config["record"_]),
           n_history_actions_(spec.config["n_history_actions"_]),
-          greedy_reward_(spec.config["greedy_reward"_]),
-          use_deck_rewards_(spec.config["use_deck_rewards"_]),
+          reward_mode_(spec.config["reward_mode"_]),
+          episode_done_mode_(spec.config["episode_done_mode"_]),
           obs_format_vectorized_([&spec]() {
             const std::string &fmt = spec.config["obs_format"_];
             if (fmt != "raw" && fmt != "vectorized")
@@ -2371,6 +2378,10 @@ namespace ygopro
       }
 
       turn_count_ = 0;
+      episode_start_turn_ = 0;
+      claimed_rules_.clear();
+      last_action_was_termination_ = false;
+      pre_captured_deck_reward_ = 0.f;
       ms_idx_ = -1;
 
       history_actions_1_.Zero();
@@ -2511,6 +2522,7 @@ namespace ygopro
 
       next();
 
+      episode_start_turn_ = turn_count_;
       ret_reward_ = 0;
       ret_win_reason_ = 0;
     }
@@ -2924,6 +2936,12 @@ namespace ygopro
 
     void step(int idx)
     {
+      // Track whether the agent chose the terminal/end-turn action
+      last_action_was_termination_ =
+          !legal_actions_.empty() &&
+          idx == static_cast<int>(legal_actions_.size()) - 1 &&
+          legal_actions_[idx].act_ == ActionAct::None;
+
       callback_(idx);
       update_history_actions(to_play_, legal_actions_[idx]);
 
@@ -2952,80 +2970,16 @@ namespace ygopro
         legal_actions_.clear();
       }
 
-      float reward = 0;
+      // Episode-done-on-turn: mark done when turn_count_ advances past the starting turn
+      if (!done_ && episode_done_mode_ == "turn" && turn_count_ > episode_start_turn_)
+      {
+        done_ = true;
+        legal_actions_.clear();
+      }
+
       int reason = 0;
       if (done_)
       {
-        float base_reward;
-        if (greedy_reward_)
-        {
-          if (winner_ == 0)
-          {
-            if (turn_count_ <= 1)
-            {
-              // FTK
-              base_reward = 16.0;
-            }
-            else if (turn_count_ <= 3)
-            {
-              base_reward = 8.0;
-            }
-            else if (turn_count_ <= 5)
-            {
-              base_reward = 4.0;
-            }
-            else if (turn_count_ <= 7)
-            {
-              base_reward = 2.0;
-            }
-            else
-            {
-              base_reward = 0.5 + 1.0 / (turn_count_ - 7);
-            }
-          }
-          else
-          {
-            if (turn_count_ <= 1)
-            {
-              base_reward = 8.0;
-            }
-            else if (turn_count_ <= 3)
-            {
-              base_reward = 4.0;
-            }
-            else if (turn_count_ <= 5)
-            {
-              base_reward = 2.0;
-            }
-            else
-            {
-              base_reward = 0.5 + 1.0 / (turn_count_ - 5);
-            }
-          }
-        }
-        else
-        {
-          base_reward = 1.0;
-        }
-
-        if (play_mode_ == kSelfPlay)
-        {
-          // if (spec_.config["oppo_info"_]) {
-          if (false)
-          {
-            reward = winner_ == 0 ? base_reward : -base_reward;
-          }
-          else
-          {
-            // to_play_ is the previous player
-            reward = winner_ == player ? base_reward : -base_reward;
-          }
-        }
-        else
-        {
-          reward = winner_ == ai_player_ ? base_reward : -base_reward;
-        }
-
         if (win_reason_ == 0x01)
         {
           reason = 1;
@@ -3046,36 +3000,91 @@ namespace ygopro
         }
       }
 
-      // update_time_stat(start, step_time_count_, step_time_);
-      // step_time_count_++;
-
-      // double step_time = 0;
-      // if (done_) {
-      //   step_time = step_time_;
-      //   step_time_ = 0;
-      //   step_time_count_ = 0;
-      // }
-
-      // if (done_) {
-      //   update_time_stat(deck_name_[0], step_time_);
-      //   update_time_stat(deck_name_[1], step_time_);
-      //   step_time_ = 0;
-      //   step_time_count_ = 0;
-      // }
-      // if (step_time_count_ % 3000 == 0) {
-      //   fmt::println("Step time: {:.3f}", step_time_ * 1000);
-      // }
-      if (use_deck_rewards_)
+      if (reward_mode_ == "terminal_board_value")
       {
-        if (duel_started_)
+        if (done_)
         {
-          ret_reward_ = current_deck_reward();
+          float raw = duel_started_ ? current_deck_reward() : pre_captured_deck_reward_;
+          ret_reward_ = raw;
         }
-        // else: value already stored in _duel_end before the duel was destroyed
+        else
+        {
+          ret_reward_ = 0.f;
+        }
+      }
+      else if (reward_mode_ == "shaped_first_credit")
+      {
+        auto cards = collect_reward_cards();
+        auto breakdown = evaluate_deck_reward_breakdown(deck_name_[0], cards);
+        // When the duel ended (_duel_end was called), cards is empty but
+        // pre_captured_deck_reward_ holds the raw value captured before YGO_EndDuel.
+        bool duel_ended_this_step = !duel_started_ && done_;
+        if (!done_)
+        {
+          float step_reward = 0.f;
+          for (const auto &kv : breakdown)
+          {
+            if (kv.second > 0.f && claimed_rules_.find(kv.first) == claimed_rules_.end())
+            {
+              step_reward += kv.second;
+              claimed_rules_[kv.first] = kv.second;
+            }
+          }
+          ret_reward_ = step_reward;
+        }
+        else
+        {
+          float raw_reward = duel_ended_this_step
+                                 ? pre_captured_deck_reward_
+                                 : [&]() {
+                                     float s = 0.f;
+                                     for (const auto &kv : breakdown)
+                                       s += kv.second;
+                                     return s;
+                                   }();
+          float lost_credit = 0.f;
+          if (!duel_ended_this_step)
+          {
+            for (const auto &claimed : claimed_rules_)
+            {
+              float cur_val = 0.f;
+              for (const auto &kv : breakdown)
+              {
+                if (kv.first == claimed.first)
+                {
+                  cur_val = kv.second;
+                  break;
+                }
+              }
+              if (cur_val <= 0.f)
+              {
+                lost_credit += claimed.second;
+              }
+            }
+          }
+          float terminal_reward;
+          if (raw_reward <= 0.f)
+          {
+            terminal_reward = -1.f;
+          }
+          else
+          {
+            terminal_reward = raw_reward;
+            constexpr float termination_bonus = 0.5f;
+            if (last_action_was_termination_)
+            {
+              terminal_reward *= (1.f + termination_bonus);
+            }
+            terminal_reward = terminal_reward * terminal_reward;
+            terminal_reward -= lost_credit;
+          }
+          ret_reward_ = terminal_reward;
+        }
       }
       else
       {
-        ret_reward_ = reward;
+        // reward_mode == "duel": no reward (board setup mode without deck rewards)
+        ret_reward_ = 0.f;
       }
       ret_win_reason_ = reason;
     }
@@ -7222,9 +7231,10 @@ namespace ygopro
 
     void _duel_end(uint8_t player, uint8_t reason)
     {
-      if (use_deck_rewards_ && duel_started_ && pduel_ != 0)
+      // Capture deck reward before destroying the duel state
+      if (duel_started_ && pduel_ != 0)
       {
-        ret_reward_ = current_deck_reward();
+        pre_captured_deck_reward_ = current_deck_reward();
       }
       winner_ = player;
       win_reason_ = reason;

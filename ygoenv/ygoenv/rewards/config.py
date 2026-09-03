@@ -162,6 +162,7 @@ class RewardRule:
     def to_dict(self) -> dict:
         """Convert to the legacy JSON format."""
         result = self.target.to_dict()
+        result["name"] = self.name
         result["reward"] = self.reward
         result["stackable"] = self.stackable
 

@@ -63,19 +63,19 @@ def _idle_msgs(env) -> set[str]:
 
 
 def _resolve_until_idle(env, prefer_cards=()) -> float:
-    last = 0.0
+    total = 0.0
     for _ in range(40):
         msgs = _idle_msgs(env)
         if "SELECT_IDLECMD" in msgs:
-            return last
+            return total
         if "SELECT_PLACE" in msgs or "SELECT_POSITION" in msgs:
-            last = _step(env, 0)
+            total += _step(env, 0)
             continue
         if "SELECT_EFFECTYN" in msgs or "SELECT_YESNO" in msgs or "SELECT_CHAIN" in msgs:
             idx = _find(env, act="Cancel")
             if idx is None:
                 idx = len(_actions(env)) - 1
-            last = _step(env, idx)
+            total += _step(env, idx)
             continue
         if "SELECT_CARD" in msgs or "SELECT_TRIBUTE" in msgs:
             idx = None
@@ -83,7 +83,7 @@ def _resolve_until_idle(env, prefer_cards=()) -> float:
                 idx = _find(env, card=card)
                 if idx is not None:
                     break
-            last = _step(env, 0 if idx is None else idx)
+            total += _step(env, 0 if idx is None else idx)
             continue
         if "SELECT_UNSELECT_CARD" in msgs:
             idx = None
@@ -93,7 +93,7 @@ def _resolve_until_idle(env, prefer_cards=()) -> float:
                     break
             if idx is None:
                 idx = _find(env, finish=True)
-            last = _step(env, 0 if idx is None else idx)
+            total += _step(env, 0 if idx is None else idx)
             continue
         raise AssertionError(f"unexpected prompt {msgs}\n{_format_actions(env)}")
     raise AssertionError(f"did not return to idle\n{_format_actions(env)}")
@@ -112,8 +112,9 @@ def _resolve_place_pos(env) -> float:
 
 def _idle_action(env, act: str, card: str, *, prefer_cards=()) -> float:
     idx = _require(env, msg="SELECT_IDLECMD", act=act, card=card)
-    _step(env, idx)
-    return _resolve_until_idle(env, prefer_cards=prefer_cards)
+    r0 = _step(env, idx)
+    r1 = _resolve_until_idle(env, prefer_cards=prefer_cards)
+    return r0 + r1
 
 
 def _py_reward(env):
@@ -143,6 +144,8 @@ def test_zoodiac_one_ratpier_max_reward_line():
         seed_mode="full_det",
         base_seed=0,
         opening_hand=[Cards.RATPIER],
+        reward_mode="shaped_first_credit",
+        episode_done_mode="turn",
     )
     try:
         assert _find(env, msg="SELECT_IDLECMD", act="Summon", card=Cards.RATPIER) is not None
@@ -200,9 +203,10 @@ def test_zoodiac_one_ratpier_max_reward_line():
         )
         assert _on_field(env, Cards.F0_DRACO_FUTURE)
         py, br = _py_reward(env)
-        assert engine == pytest.approx(1.0)
         assert py == pytest.approx(1.0)
         assert br == {DRACO_RULE: 1.0}
+        # shaped_first_credit: Draco rule credit fires within this idle-action block
+        assert engine == pytest.approx(1.0), f"Draco rule should give +1.0 credit, got {engine}"
 
         engine = _idle_action(
             env, "SpSummon", Cards.DRIDENT, prefer_cards=(Cards.RATPIER,)
@@ -210,8 +214,9 @@ def test_zoodiac_one_ratpier_max_reward_line():
         assert _on_field(env, Cards.DRIDENT)
         assert _on_field(env, Cards.F0_DRACO_FUTURE)
         py, br = _py_reward(env)
-        assert engine == pytest.approx(2.0)
         assert py == pytest.approx(2.0)
         assert br == {DRIDENT_RULE: 1.0, DRACO_RULE: 1.0}
+        # shaped_first_credit: Drident rule credit fires within this idle-action block
+        assert engine == pytest.approx(1.0), f"Drident rule should give +1.0 credit, got {engine}"
     finally:
         env.close()

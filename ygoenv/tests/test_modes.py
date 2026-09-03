@@ -13,14 +13,11 @@ def test_board_setup_config():
     cfg = resolve_mode_config(GameMode.BOARD_SETUP)
     assert cfg.play_mode == "board"
     assert cfg.player == 0
-    assert cfg.use_deck_rewards is True
-    assert cfg.greedy_reward is False
 
 
 def test_play_vs_opponent_config():
     cfg = resolve_mode_config(GameMode.PLAY_VS_OPPONENT)
     assert cfg.play_mode == "bot"
-    assert cfg.use_deck_rewards is False
 
 
 def test_make_env_kwargs_includes_decks():
@@ -32,11 +29,11 @@ def test_make_env_kwargs_includes_decks():
     )
     assert kw["deck1"] == "tear"
     assert kw["deck2"] == "_dummy"
-    assert kw["play_mode"] in ("board", "bot")
+    assert kw["play_mode"] == "board"
     assert kw["player"] == 0
-    if "use_deck_rewards" in kw:
-        assert kw["use_deck_rewards"] is True
     assert kw["max_cards"] == 80
+    assert "use_deck_rewards" not in kw
+    assert "greedy_reward" not in kw
 
 
 def test_resolve_opening_hand_codes_and_names():
@@ -72,3 +69,27 @@ def test_make_env_kwargs_opening_hand():
         opening_hand=[Cards.RATPIER],
     )
     assert kw["opening_hand"] == "78872731"
+
+
+def test_make_env_kwargs_reward_modes():
+    kw = make_env_kwargs(
+        GameMode.BOARD_SETUP,
+        deck1="zoodiac",
+        deck2="_dummy",
+        max_cards=80,
+        reward_mode="shaped_first_credit",
+        episode_done_mode="turn",
+    )
+    assert kw["reward_mode"] == "shaped_first_credit"
+    assert kw["episode_done_mode"] == "turn"
+
+
+def test_make_env_kwargs_invalid_reward_mode():
+    with pytest.raises(ValueError, match="reward_mode"):
+        make_env_kwargs(
+            GameMode.BOARD_SETUP,
+            deck1="zoodiac",
+            deck2="_dummy",
+            max_cards=80,
+            reward_mode="bogus",
+        )

@@ -811,6 +811,26 @@ namespace ygopro
     return total;
   }
 
+  // Returns per-rule (name, value) contributions for the given deck and cards.
+  inline std::vector<std::pair<std::string, float>> evaluate_deck_reward_breakdown(
+      const std::string &deck_name,
+      const std::vector<RewardCard> &cards)
+  {
+    std::vector<std::pair<std::string, float>> breakdown;
+    auto &all = deck_reward_rules();
+    auto it = all.find(deck_name);
+    if (it == all.end())
+    {
+      return breakdown;
+    }
+    for (const auto &rule : it->second)
+    {
+      float val = evaluate_rule(cards, rule);
+      breakdown.emplace_back(rule.name, val);
+    }
+    return breakdown;
+  }
+
 } // namespace ygopro
 
 #endif

@@ -1,8 +1,5 @@
-import os
-
 import numpy as np
 import pytest
-import torch
 
 try:
     import ygoenv.ygopro  # noqa: F401
@@ -16,13 +13,13 @@ from ygoenv.paths import embeddings_path
 
 
 def test_reconstruct_full_card_static_shape():
+    import torch
     b, n = 2, 4
     card_emb_idx = torch.tensor([[0, 1, -1, 2], [3, -1, 4, 5]], dtype=torch.int64)
     card_static_board = torch.zeros(b, n, STATIC_BOARD_DIM)
     out = reconstruct_full_card_static(card_emb_idx, card_static_board)
     assert out.shape == (b, n, STATIC_CARD_DIM)
     assert out.dtype == torch.float32
-    # Padding slots (emb_idx == -1) should be all zeros.
     assert out[0, 2].abs().max().item() == 0.0
 
 
@@ -33,12 +30,10 @@ def test_reconstruct_full_card_static_shape():
 )
 def test_env_wrapper_smoke_tear():
     from ygoenv import EnvWrapper, ENV_MODES
-    from ygoenv.modes import _legacy_native_build
 
     wrapper = EnvWrapper(
         deck="tear",
         num_envs=1,
-        max_episode_steps=10,
         base_seed=42,
         mode=ENV_MODES[0],
         auto_reset=False,
@@ -47,8 +42,7 @@ def test_env_wrapper_smoke_tear():
     assert obs.card_emb_idx.shape[0] == 1
     assert obs.card_static_board.shape[-1] == STATIC_BOARD_DIM
     n_opt = int(np.any(wrapper._obs["actions_"][0] != 0, axis=1).sum())
-    if not _legacy_native_build():
-        assert n_opt >= 1
+    assert n_opt >= 1
     wrapper.step(np.array([0], dtype=np.int32))
     wrapper.close()
 

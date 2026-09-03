@@ -29,44 +29,20 @@ class ModeConfig:
 
     play_mode: str
     player: int
-    use_deck_rewards: bool
-    greedy_reward: bool
 
 
 def resolve_mode_config(
     mode: GameMode,
     *,
     opponent_mode: OpponentMode = OpponentMode.BOT,
-    greedy_reward: bool = True,
     ai_player: int = 0,
 ) -> ModeConfig:
     """Map a :class:`GameMode` to engine configuration."""
     if mode == GameMode.BOARD_SETUP:
-        return ModeConfig(
-            play_mode="board",
-            player=0,
-            use_deck_rewards=True,
-            greedy_reward=False,
-        )
+        return ModeConfig(play_mode="board", player=0)
     if mode == GameMode.PLAY_VS_OPPONENT:
-        return ModeConfig(
-            play_mode=opponent_mode.value,
-            player=ai_player,
-            use_deck_rewards=False,
-            greedy_reward=greedy_reward,
-        )
+        return ModeConfig(play_mode=opponent_mode.value, player=ai_player)
     raise ValueError(f"Unknown game mode: {mode!r}")
-
-
-@lru_cache(maxsize=1)
-def _native_has_obs_format() -> bool:
-    """True when ygopro_ygoenv.so DefaultConfig includes obs_format."""
-    try:
-        from ygoenv.ygopro.ygopro_ygoenv import _YGOProEnvSpec
-
-        return "obs_format" in list(_YGOProEnvSpec._config_keys)
-    except Exception:
-        return False
 
 
 @lru_cache(maxsize=1)
@@ -89,21 +65,6 @@ def _native_has_ml_obs() -> bool:
         return any("ml_card_emb_idx_" in str(k) for k in _YGOProEnvSpec._state_keys)
     except Exception:
         return False
-
-
-@lru_cache(maxsize=1)
-def _legacy_native_build() -> bool:
-    """True when the installed ``ygopro_ygoenv.so`` predates script/reward JSON wiring.
-
-    pybind ``init_module`` often has no inspectable signature, so we key off
-    DefaultConfig fields instead.
-    """
-    try:
-        from ygoenv.ygopro.ygopro_ygoenv import _YGOProEnvSpec
-
-        return "use_deck_rewards" not in list(_YGOProEnvSpec._config_keys)
-    except Exception:
-        return True
 
 
 def _lookup_card_code_by_name(name: str, db_path: Optional[str] = None) -> str:
@@ -216,6 +177,24 @@ def validate_opening_hand(
     return encoded
 
 
+_VALID_REWARD_MODES = {"duel", "terminal_board_value", "shaped_first_credit"}
+_VALID_EPISODE_DONE_MODES = {"duel", "turn"}
+
+
+def _validate_reward_mode(mode: str) -> None:
+    if mode not in _VALID_REWARD_MODES:
+        raise ValueError(
+            f"reward_mode must be one of {sorted(_VALID_REWARD_MODES)}, got {mode!r}"
+        )
+
+
+def _validate_episode_done_mode(mode: str) -> None:
+    if mode not in _VALID_EPISODE_DONE_MODES:
+        raise ValueError(
+            f"episode_done_mode must be one of {sorted(_VALID_EPISODE_DONE_MODES)}, got {mode!r}"
+        )
+
+
 def make_env_kwargs(
     mode: GameMode,
     *,
@@ -223,25 +202,21 @@ def make_env_kwargs(
     deck2: str,
     max_cards: int,
     opponent_mode: OpponentMode = OpponentMode.BOT,
-    greedy_reward: bool = True,
     ai_player: int = 0,
     verbose: bool = False,
     seed: int | None = None,
     obs_format: str = "raw",
     opening_hand: Sequence[int | str] | None = None,
     db_path: Optional[str] = None,
+    reward_mode: str = "duel",
+    episode_done_mode: str = "duel",
 ) -> Dict[str, Any]:
     """Build the ``ygoenv.make()`` keyword dict for *mode*."""
-    cfg = resolve_mode_config(
-        mode,
-        opponent_mode=opponent_mode,
-        greedy_reward=greedy_reward,
-        ai_player=ai_player,
-    )
-    play_mode = cfg.play_mode
-    if _legacy_native_build() and play_mode == "board":
-        # Older ygopro_ygoenv.so builds lack board-setup play mode.
-        play_mode = "bot"
+    _validate_reward_mode(reward_mode)
+    _validate_episode_done_mode(episode_done_mode)
+    cfg = resolve_mode_config(mode, opponent_mode=opponent_mode, ai_player=ai_player)
+    if obs_format not in ("raw", "vectorized"):
+        raise ValueError(f"obs_format must be 'raw' or 'vectorized', got {obs_format!r}")
     out: Dict[str, Any] = {
         "task_id": "YGOPro-v1",
         "env_type": "gymnasium",
@@ -253,19 +228,15 @@ def make_env_kwargs(
         "max_cards": max_cards,
         "max_options": 99,
         "n_history_actions": 300,
-        "play_mode": play_mode,
+        "play_mode": cfg.play_mode,
         "async_reset": False,
         "verbose": verbose,
         "record": False,
         "oppo_info": True,
-        "greedy_reward": cfg.greedy_reward,
+        "obs_format": obs_format,
+        "reward_mode": reward_mode,
+        "episode_done_mode": episode_done_mode,
     }
-    if not _legacy_native_build():
-        out["use_deck_rewards"] = cfg.use_deck_rewards
-    if _native_has_obs_format():
-        if obs_format not in ("raw", "vectorized"):
-            raise ValueError(f"obs_format must be 'raw' or 'vectorized', got {obs_format!r}")
-        out["obs_format"] = obs_format
     if seed is not None:
         out["seed"] = seed
     if opening_hand:

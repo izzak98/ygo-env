@@ -13,7 +13,9 @@ import numpy as np
 import ygoenv as ygoenv_lowlevel
 from ygoenv.decoding import DoubleSliceableRecord, decode_all_batch
 from ygoenv.init import init_ygopro
-from ygoenv.modes import GameMode, OpponentMode, make_env_kwargs, resolve_mode_config, _legacy_native_build, _native_has_ml_obs, validate_opening_hand
+from ygoenv.modes import (GameMode, OpponentMode, make_env_kwargs, resolve_mode_config,
+                          _native_has_ml_obs, validate_opening_hand,
+                          _validate_reward_mode, _validate_episode_done_mode)
 from ygoenv.paths import cards_db, deck_path
 
 DEFAULT_MAX_CARDS = 80
@@ -44,22 +46,11 @@ def try_set_emb_index_map() -> None:
     _embedding_cache.init_fast(embeddings, get_code_list())
     set_emb_index_map(_embedding_cache._code_to_emb_idx.tolist())
 
+
 SEED_MODE_FULL_DET = "full_det"
 SEED_MODE_SEMI_DYNAMIC = "semi_dynamic"
 SEED_MODE_FULL_DYNAMIC = "full_dynamic"
 SEED_MODES = (SEED_MODE_FULL_DET, SEED_MODE_SEMI_DYNAMIC, SEED_MODE_FULL_DYNAMIC)
-
-
-def _get_dones(obs: dict) -> Tuple[np.ndarray, np.ndarray]:
-    b = obs["cards_"].shape[0]
-    done_idx = np.array(
-        [i for i, d in enumerate(obs["global_"]) if d[4] != 1],
-        dtype=np.int32,
-    )
-    dones = np.zeros(b, dtype=bool)
-    if len(done_idx) > 0:
-        dones[done_idx] = True
-    return done_idx, dones
 
 
 def _stack_obs(obs_list: List[dict]) -> dict:
@@ -92,7 +83,6 @@ class YGOEnv:
         *,
         opponent_deck: str = "garnet",
         opponent_mode: OpponentMode = OpponentMode.BOT,
-        greedy_reward: bool = True,
         ai_player: int = 0,
         seed_mode: str = SEED_MODE_FULL_DYNAMIC,
         base_seed: int = 0,
@@ -102,11 +92,15 @@ class YGOEnv:
         lang: str = "en",
         obs_format: str = OBS_FORMAT_RAW,
         opening_hand: Optional[Sequence[int | str]] = None,
+        reward_mode: str = "duel",
+        episode_done_mode: str = "duel",
     ) -> None:
         if seed_mode not in SEED_MODES:
             raise ValueError(f"seed_mode must be one of {SEED_MODES}, got {seed_mode!r}")
         if obs_format not in OBS_FORMATS:
             raise ValueError(f"obs_format must be one of {OBS_FORMATS}, got {obs_format!r}")
+        _validate_reward_mode(reward_mode)
+        _validate_episode_done_mode(episode_done_mode)
 
         self.mode = GameMode(mode) if isinstance(mode, str) else mode
         if obs_format == OBS_FORMAT_VECTORIZED and self.mode == GameMode.PLAY_VS_OPPONENT:
@@ -119,6 +113,8 @@ class YGOEnv:
         self.obs_format = obs_format
         self.deck = deck
         self.opening_hand = list(opening_hand) if opening_hand else None
+        self.reward_mode = reward_mode
+        self.episode_done_mode = episode_done_mode
         self._total_envs = num_envs
         self.num_envs = num_envs
         self.opponent_deck = opponent_deck
@@ -129,7 +125,6 @@ class YGOEnv:
         self._mode_config = resolve_mode_config(
             self.mode,
             opponent_mode=opponent_mode,
-            greedy_reward=greedy_reward,
             ai_player=ai_player,
         )
 
@@ -142,7 +137,7 @@ class YGOEnv:
 
         self._deck_names_per_env = deck_names_in
         unique_decks = list(dict.fromkeys(deck_names_in))
-        skip_opponent = self.mode == GameMode.BOARD_SETUP and not _legacy_native_build()
+        skip_opponent = self.mode == GameMode.BOARD_SETUP
         if self.obs_format == OBS_FORMAT_VECTORIZED:
             try_set_emb_index_map()
         player_name, registered = init_ygopro(
@@ -151,10 +146,7 @@ class YGOEnv:
             db_path=db,
             return_deck_names=True,
         )
-        if self.mode == GameMode.BOARD_SETUP and _legacy_native_build():
-            opp_stem = Path(opponent_deck).stem
-            opp_name = opp_stem if opp_stem in registered else "garnet"
-        elif skip_opponent:
+        if skip_opponent:
             opp_name = "_dummy"
         else:
             opp_stem = Path(opponent_deck).stem
@@ -169,10 +161,8 @@ class YGOEnv:
 
         def _init_single(i: int) -> None:
             player_deck_name = Path(deck_names_in[i]).stem
-            if self.mode == GameMode.PLAY_VS_OPPONENT:
-                deck1, deck2 = player_deck_name, opp_name
-            else:
-                deck1, deck2 = player_deck_name, opp_name
+            deck1 = player_deck_name
+            deck2 = opp_name
 
             if self.opening_hand:
                 validate_opening_hand(
@@ -193,13 +183,14 @@ class YGOEnv:
                 deck2=deck2,
                 max_cards=max_cards,
                 opponent_mode=opponent_mode,
-                greedy_reward=greedy_reward,
                 ai_player=ai_player,
                 verbose=verbose,
                 seed=seed_kw.get("seed"),
                 obs_format=self.obs_format,
                 opening_hand=self.opening_hand,
                 db_path=db,
+                reward_mode=self.reward_mode,
+                episode_done_mode=self.episode_done_mode,
             )
             env = ygoenv_lowlevel.make(**kwargs)
             reset_seed = self._get_reset_seed(i)
@@ -223,10 +214,6 @@ class YGOEnv:
         self._active_indices: Optional[List[int]] = None
         self._decoded: Optional[DoubleSliceableRecord] = None
         self._refresh_decoded()
-
-    @property
-    def use_deck_rewards(self) -> bool:
-        return self._mode_config.use_deck_rewards
 
     @property
     def decoded_cards(self) -> DoubleSliceableRecord:
@@ -316,12 +303,7 @@ class YGOEnv:
         self,
         actions: np.ndarray,
     ) -> Tuple[dict, List[float], np.ndarray, np.ndarray, List[float]]:
-        """Step active envs.
-
-        Returns
-        -------
-        obs, engine_rewards, dones_bool, done_idx, raw_engine_rewards
-        """
+        """Step active envs. Returns (obs, rewards, terminated, truncated, info)."""
         if isinstance(actions, list):
             actions = np.array(actions, dtype=np.int32)
 
@@ -332,6 +314,7 @@ class YGOEnv:
             )
 
         engine_rewards_full = [0.0] * self._total_envs
+        terminated_full = np.zeros(self._total_envs, dtype=bool)
         step_results: List[Optional[dict]] = [None] * len(active)
 
         def _step_one(env_idx: int, local_i: int) -> None:
@@ -339,6 +322,7 @@ class YGOEnv:
             ob, rew, term, trunc, _ = self._envs[env_idx].step(act)
             step_results[local_i] = ob
             engine_rewards_full[env_idx] = float(rew[0])
+            terminated_full[env_idx] = bool(term[0]) or bool(trunc[0])
 
         if len(active) > 1:
             list(self._executor.map(
@@ -356,13 +340,10 @@ class YGOEnv:
 
         self._refresh_decoded()
 
-        done_idx, dones_bool = _get_dones(self._obs)
-        active_set = set(active)
-        if len(done_idx) > 0:
-            done_idx = np.array([i for i in done_idx if i in active_set], dtype=np.int32)
-
         subset_rewards = [engine_rewards_full[i] for i in active]
-        return self.obs, subset_rewards, dones_bool[active], done_idx, subset_rewards
+        subset_terminated = terminated_full[active]
+        subset_truncated = np.zeros(len(active), dtype=bool)
+        return self.obs, subset_rewards, subset_terminated, subset_truncated, {}
 
     def close(self) -> None:
         self._executor.shutdown(wait=False)

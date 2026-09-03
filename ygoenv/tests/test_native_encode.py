@@ -7,7 +7,7 @@ try:
 except ImportError:
     HAS_SO = False
 
-from ygoenv.modes import _legacy_native_build, _native_has_ml_obs, _native_has_obs_format
+from ygoenv.modes import _native_has_ml_obs
 from ygoenv.paths import embeddings_path
 
 
@@ -29,7 +29,6 @@ def _load_embeddings():
     return _stub_embeddings()
 
 
-@pytest.mark.skipif(not _native_has_obs_format(), reason="obs_format not in native config")
 def test_ygoenv_raw_hides_ml_keys():
     from ygoenv import GameMode, YGOEnv
 
@@ -155,9 +154,9 @@ def test_native_compact_matches_encode_all_batch_fast():
 
             n_opt = int(np.any(raw["actions_"][0] != 0, axis=1).sum())
             act = 0 if n_opt <= 0 else int(rng.integers(0, n_opt))
-            _, _, _, done_idx, _ = env.step(np.array([act], dtype=np.int32))
-            if len(done_idx) > 0:
-                env.reset(env_indices=done_idx.tolist())
+            _, _, terminated, _, _ = env.step(np.array([act], dtype=np.int32))
+            if terminated[0]:
+                env.reset()
     finally:
         env.close()
 
@@ -173,7 +172,6 @@ def test_env_wrapper_vectorized_default_smoke():
     wrapper = EnvWrapper(
         deck="tear",
         num_envs=1,
-        max_episode_steps=10,
         base_seed=42,
         mode="full_det",
         auto_reset=False,
