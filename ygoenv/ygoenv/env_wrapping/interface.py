@@ -874,6 +874,51 @@ def encode_all_batch_fast(
     return encoded, _prompt_gpu
 
 
+def encoded_compact_from_ml_numpy(
+    obs: dict,
+    use_preallocated_gpu: bool = False,
+) -> tuple[EncodedObsCompact, torch.Tensor]:
+    """Convert native vectorized numpy obs keys into EncodedObsCompact + prompt (on DEVICE)."""
+    card_emb_idx_np = np.ascontiguousarray(obs["ml_card_emb_idx_"], dtype=np.int64)
+    hist_emb_idx_np = np.ascontiguousarray(obs["ml_hist_emb_idx_"], dtype=np.int64)
+    card_static_np = np.ascontiguousarray(obs["ml_card_static_"], dtype=np.float32)
+    card_dynamic_np = np.ascontiguousarray(obs["ml_card_dynamic_"], dtype=np.float32)
+    history_info_np = np.ascontiguousarray(obs["ml_history_info_"], dtype=np.float32)
+    prompt_np = np.ascontiguousarray(obs["ml_prompt_"], dtype=np.float32)
+    if card_emb_idx_np.ndim == 1:
+        card_emb_idx_np = card_emb_idx_np[None, ...]
+        hist_emb_idx_np = hist_emb_idx_np[None, ...]
+        card_static_np = card_static_np[None, ...]
+        card_dynamic_np = card_dynamic_np[None, ...]
+        history_info_np = history_info_np[None, ...]
+        prompt_np = prompt_np[None, ...]
+
+    get_lazy_intrinsic_table().update_from_numpy(card_emb_idx_np, card_static_np)
+    board_np = np.ascontiguousarray(card_static_np[:, :, STATIC_INTRINSIC_DIM:])
+    n_cards = card_emb_idx_np.shape[1]
+    shuf = np.full(card_emb_idx_np.shape, -1, dtype=np.int64)
+    n_me = obs.get("ml_n_me_")
+    if n_me is not None:
+        n_me_arr = np.atleast_1d(np.asarray(n_me, dtype=np.int32))
+        for b, n in enumerate(n_me_arr):
+            n = int(max(0, min(int(n), n_cards)))
+            if n:
+                shuf[b, :n] = np.arange(n)
+
+    card_emb_idx_t = torch.from_numpy(card_emb_idx_np).to(DEVICE)
+    hist_emb_idx_t = torch.from_numpy(hist_emb_idx_np).to(DEVICE)
+    encoded = EncodedObsCompact(
+        card_emb_idx=card_emb_idx_t,
+        hist_emb_idx=hist_emb_idx_t,
+        card_static_board=torch.from_numpy(board_np).to(DEVICE),
+        card_dynamic=torch.from_numpy(card_dynamic_np).to(DEVICE),
+        history_info=torch.from_numpy(history_info_np).to(DEVICE),
+        shuffle_indices=torch.from_numpy(shuf).to(DEVICE),
+    )
+    prompt_t = torch.from_numpy(prompt_np).to(DEVICE)
+    return encoded, prompt_t
+
+
 def load_embeddings(path: Optional[Union[str, Path]] = None) -> dict[str, Union[str, list[float]]]:
     """
     Load card embeddings from a JSON file.

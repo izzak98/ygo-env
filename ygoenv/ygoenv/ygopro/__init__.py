@@ -13,6 +13,13 @@ except ImportError:
         """No-op when native binding was built without load_reward_json."""
         pass
 
+try:
+    from .ygopro_ygoenv import set_emb_index_map
+except ImportError:
+    def set_emb_index_map(code_to_emb_idx) -> None:  # noqa: ARG001
+        """No-op when native binding was built without set_emb_index_map."""
+        pass
+
 (
     YGOProEnvSpec,
     YGOProDMEnvPool,
@@ -28,4 +35,5 @@ __all__ = [
     "YGOProGymnasiumEnvPool",
     "init_module",
     "load_reward_json",
+    "set_emb_index_map",
 ]

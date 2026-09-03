@@ -11,15 +11,16 @@ Modes control seed on reset:
 
 import collections
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Tuple, List, Any, Union, Dict
+from typing import Optional, Tuple, List, Any, Union, Dict, Sequence
 from dataclasses import dataclass
 import threading
 
 import numpy as np
 import torch
-from ygoenv.wrapper import YGOEnv
-from ygoenv.modes import GameMode
+from ygoenv.wrapper import YGOEnv, OBS_FORMAT_RAW, OBS_FORMAT_VECTORIZED, OBS_FORMATS, try_set_emb_index_map
+from ygoenv.modes import GameMode, _native_has_ml_obs
 from ygoenv.decoding import (
     decode_cards_batch,
     CardRecord,
@@ -29,7 +30,9 @@ from ygoenv.decoding import (
     decode_all_batch,
 )
 from ygoenv.rewards import get_reward, get_reward_breakdown
-from ygoenv.env_wrapping.interface import (load_embeddings, encode_all_batch_fast, EncodedObsCompact)
+from ygoenv.env_wrapping.interface import (
+    load_embeddings, encode_all_batch_fast, EncodedObsCompact, encoded_compact_from_ml_numpy,
+)
 from ygoenv.constants import PROMPTS, LONG_PROMPTS_TO_SHORT_PROMPTS, DEVICE, CARD_SIZE
 # Valid mode names for curriculum
 ENV_MODE_FULL_DET = "full_det"
@@ -208,6 +211,8 @@ class EnvWrapper:
         auto_reset: bool = True,
         env_verbose: bool = False,
         game_mode: str = "board_setup",
+        obs_format: Optional[str] = None,
+        opening_hand: Optional[Sequence[Union[int, str]]] = None,
     ):
         self.deck = deck
         # Total number of envs is fixed at construction time; num_envs may later
@@ -242,6 +247,30 @@ class EnvWrapper:
             )
         self._game_mode = GameMode(game_mode)
 
+        if obs_format is None:
+            obs_format = (
+                OBS_FORMAT_VECTORIZED
+                if self._game_mode == GameMode.BOARD_SETUP
+                else OBS_FORMAT_RAW
+            )
+        if obs_format not in OBS_FORMATS:
+            raise ValueError(f"obs_format must be one of {OBS_FORMATS}, got {obs_format!r}")
+        if obs_format == OBS_FORMAT_VECTORIZED and self._game_mode == GameMode.PLAY_VS_OPPONENT:
+            raise ValueError("obs_format='vectorized' is not supported for play_vs_opponent yet")
+        if obs_format == OBS_FORMAT_VECTORIZED and not _native_has_ml_obs():
+            warnings.warn(
+                "native compact ML obs is unavailable; EnvWrapper falling back to encode_all_batch_fast",
+                stacklevel=2,
+            )
+            obs_format = OBS_FORMAT_RAW
+        self.obs_format = obs_format
+        self._native_ml = obs_format == OBS_FORMAT_VECTORIZED
+        self._warned_ml_fallback = False
+
+        self.embeddings = load_embeddings()
+        if self._native_ml:
+            try_set_emb_index_map()
+
         self._ygo = YGOEnv(
             mode=self._game_mode,
             deck=deck,
@@ -251,12 +280,12 @@ class EnvWrapper:
             db_path=db_path,
             max_cards=CARD_SIZE,
             verbose=env_verbose,
+            obs_format=self.obs_format,
+            opening_hand=opening_hand,
         )
         self._envs = self._ygo._envs
         self._obs = self._ygo._obs
         self._executor = self._ygo._executor
-
-        self.embeddings = load_embeddings()
         self._wrapped_obs = self.transform_obs(self._obs)
         self._prev_rewards = [0.0] * self._total_envs
         self._claimed_reward_rules = [{} for _ in range(self._total_envs)]
@@ -319,12 +348,21 @@ class EnvWrapper:
         # rows in the training env's _wrapped_obs.  _partial_gpu is a separate pool that
         # _wrapped_obs never references after the first step, so it is safe to use here.
         batched_decodes = decode_all_batch(obs, True)
-        encoded_out, prompt_one_hot = encode_all_batch_fast(
-            obs,
-            self.embeddings,
-            max_cards=CARD_SIZE,
-            use_preallocated_gpu=False,
-        )
+        if self._native_ml and "ml_card_emb_idx_" in obs:
+            encoded_out, prompt_one_hot = encoded_compact_from_ml_numpy(obs)
+        else:
+            if self._native_ml and not self._warned_ml_fallback:
+                warnings.warn(
+                    "native ML obs keys missing; falling back to encode_all_batch_fast",
+                    stacklevel=2,
+                )
+                self._warned_ml_fallback = True
+            encoded_out, prompt_one_hot = encode_all_batch_fast(
+                obs,
+                self.embeddings,
+                max_cards=CARD_SIZE,
+                use_preallocated_gpu=False,
+            )
         b = obs["cards_"].shape[0]
 
         decoded_cards = DoubleSliceableRecord([d[0] for d in batched_decodes])
@@ -373,12 +411,21 @@ class EnvWrapper:
         # Serial decode-then-encode: parallel was slower due to GIL contention from
         # Phase 3 Python object creation holding the GIL for ~275ms per decode call.
         batched_decodes = decode_all_batch(partial_raw, True)
-        encoded_out, prompt_one_hot = encode_all_batch_fast(
-            partial_raw,
-            self.embeddings,
-            max_cards=CARD_SIZE,
-            use_preallocated_gpu=full_batch,
-        )
+        if self._native_ml and "ml_card_emb_idx_" in partial_raw:
+            encoded_out, prompt_one_hot = encoded_compact_from_ml_numpy(partial_raw)
+        else:
+            if self._native_ml and not self._warned_ml_fallback:
+                warnings.warn(
+                    "native ML obs keys missing; falling back to encode_all_batch_fast",
+                    stacklevel=2,
+                )
+                self._warned_ml_fallback = True
+            encoded_out, prompt_one_hot = encode_all_batch_fast(
+                partial_raw,
+                self.embeddings,
+                max_cards=CARD_SIZE,
+                use_preallocated_gpu=full_batch,
+            )
         decoded_cards_p = DoubleSliceableRecord([d[0] for d in batched_decodes])
         decoded_actions_p = DoubleSliceableRecord([d[1] for d in batched_decodes])
         decoded_histories_p = DoubleSliceableRecord([d[2] for d in batched_decodes])
@@ -541,10 +588,9 @@ class EnvWrapper:
                 else self._envs[idx].reset()
             )
             with lock:
-                self._obs["cards_"][idx] = done_obs["cards_"][0]
-                self._obs["actions_"][idx] = done_obs["actions_"][0]
-                self._obs["h_actions_"][idx] = done_obs["h_actions_"][0]
-                self._obs["global_"][idx] = done_obs["global_"][0]
+                for key in self._obs:
+                    if key in done_obs:
+                        self._obs[key][idx] = done_obs[key][0]
                 self._terminated[idx] = False
                 self._steps_since_reset[idx] = 0
                 self._claimed_reward_rules[idx].clear()

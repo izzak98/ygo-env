@@ -27,3 +27,7 @@ editable_wheel = "build_native.EditableWheelWithNative"
 
 [tool.setuptools.package-data]
 "ygoenv.ygopro" = ["*.so"]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+testpaths = ["tests"]

@@ -1451,6 +1451,8 @@ namespace ygopro
   static std::mutex script_mu_;
   static bool module_inited_ = false;
   static std::string script_dir_;
+  static std::vector<int32_t> emb_index_map_;
+  static std::mutex emb_map_mu_;
   static constexpr CardCode kDummyCardCode = 91731841;
   static constexpr const char *kDummyDeckName = "_dummy";
 
@@ -1727,6 +1729,26 @@ namespace ygopro
     }
   }
 
+  static void set_emb_index_map(const std::vector<int32_t> &m)
+  {
+    std::lock_guard<std::mutex> lock(emb_map_mu_);
+    emb_index_map_ = m;
+  }
+
+  inline int32_t emb_idx_for_card_id(CardId cid)
+  {
+    if (cid == 0)
+    {
+      return -1;
+    }
+    const std::size_t i = static_cast<std::size_t>(cid - 1);
+    if (i >= emb_index_map_.size())
+    {
+      return -1;
+    }
+    return emb_index_map_[i];
+  }
+
   inline std::string getline()
   {
     char *line = nullptr;
@@ -1873,7 +1895,9 @@ namespace ygopro
                       "record"_.Bind(false), "async_reset"_.Bind(false),
                       "greedy_reward"_.Bind(true), "use_deck_rewards"_.Bind(false),
                       "timeout"_.Bind(600),
-                      "oppo_info"_.Bind(false), "max_steps"_.Bind(1000));
+                      "oppo_info"_.Bind(false), "max_steps"_.Bind(1000),
+                      "obs_format"_.Bind(std::string("raw")),
+                      "opening_hand"_.Bind(std::string("")));
     }
     template <typename Config>
     static decltype(auto) StateSpec(const Config &conf)
@@ -1894,7 +1918,14 @@ namespace ygopro
           "info:step_time"_.Bind(Spec<double>({2})),
           "info:deck"_.Bind(Spec<int>({2})),
           // ADD THIS LINE
-          "info:legal_actions_str"_.Bind(Spec<char>({4096})));
+          "info:legal_actions_str"_.Bind(Spec<char>({4096})),
+          "obs:ml_card_emb_idx_"_.Bind(Spec<int>({conf["max_cards"_]})),
+          "obs:ml_hist_emb_idx_"_.Bind(Spec<int>({conf["n_history_actions"_]})),
+          "obs:ml_card_static_"_.Bind(Spec<float>({conf["max_cards"_], 85})),
+          "obs:ml_card_dynamic_"_.Bind(Spec<float>({conf["max_cards"_], 26})),
+          "obs:ml_history_info_"_.Bind(Spec<float>({conf["n_history_actions"_], 23})),
+          "obs:ml_prompt_"_.Bind(Spec<float>({13})),
+          "obs:ml_n_me_"_.Bind(Spec<int>({})));
     }
     template <typename Config>
     static decltype(auto) ActionSpec(const Config &conf)
@@ -1958,6 +1989,131 @@ namespace ygopro
     return modes;
   }
 
+  inline std::string trim_copy(const std::string &s)
+  {
+    auto start = s.find_first_not_of(" \t");
+    if (start == std::string::npos)
+    {
+      return "";
+    }
+    auto end = s.find_last_not_of(" \t");
+    return s.substr(start, end - start + 1);
+  }
+
+  // Comma-separated card codes, e.g. "78872731" or "78872731,46060017".
+  inline std::vector<CardCode> parse_opening_hand(const std::string &s)
+  {
+    std::vector<CardCode> out;
+    if (s.empty())
+    {
+      return out;
+    }
+    std::istringstream ss(s);
+    std::string token;
+    while (std::getline(ss, token, ','))
+    {
+      token = trim_copy(token);
+      if (token.empty())
+      {
+        continue;
+      }
+      try
+      {
+        size_t idx = 0;
+        unsigned long v = std::stoul(token, &idx, 10);
+        if (idx != token.size())
+        {
+          throw std::invalid_argument(token);
+        }
+        out.push_back(static_cast<CardCode>(v));
+      }
+      catch (const std::exception &)
+      {
+        throw std::runtime_error("invalid opening_hand card code: " + token);
+      }
+    }
+    return out;
+  }
+
+  // Pin `want` into the opening `n_draw` cards (end of `main` = top of deck).
+  // Extra copies of those codes are buried below the opening hand so the
+  // remaining slots are filled from other cards.
+  inline void apply_opening_hand(std::vector<CardCode> &main,
+                                 const std::vector<CardCode> &want,
+                                 int n_draw, std::mt19937 &gen)
+  {
+    if (want.empty())
+    {
+      return;
+    }
+    if (static_cast<int>(want.size()) > n_draw)
+    {
+      throw std::runtime_error(
+          "opening_hand has " + std::to_string(want.size()) +
+          " cards but start count is " + std::to_string(n_draw));
+    }
+
+    std::vector<char> used(main.size(), 0);
+    std::vector<CardCode> pinned;
+    pinned.reserve(want.size());
+    for (CardCode code : want)
+    {
+      bool found = false;
+      for (size_t i = 0; i < main.size(); ++i)
+      {
+        if (!used[i] && main[i] == code)
+        {
+          used[i] = 1;
+          pinned.push_back(code);
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        throw std::runtime_error(
+            "opening_hand card not in main deck: " + std::to_string(code));
+      }
+    }
+
+    std::unordered_set<CardCode> pinned_set(want.begin(), want.end());
+    std::vector<CardCode> fillers;
+    std::vector<CardCode> buried;
+    const int n_fill = n_draw - static_cast<int>(pinned.size());
+    fillers.reserve(static_cast<size_t>(std::max(n_fill, 0)));
+    buried.reserve(main.size() - pinned.size());
+    for (size_t i = 0; i < main.size(); ++i)
+    {
+      if (used[i])
+      {
+        continue;
+      }
+      if (static_cast<int>(fillers.size()) < n_fill && pinned_set.count(main[i]) == 0)
+      {
+        fillers.push_back(main[i]);
+      }
+      else
+      {
+        buried.push_back(main[i]);
+      }
+    }
+    if (static_cast<int>(fillers.size()) < n_fill)
+    {
+      throw std::runtime_error(
+          "opening_hand: not enough other cards in the main deck to fill the remaining " +
+          std::to_string(n_fill) +
+          " opening-hand slot(s) without extra copies of the pinned cards");
+    }
+
+    std::shuffle(fillers.begin(), fillers.end(), gen);
+    std::shuffle(buried.begin(), buried.end(), gen);
+
+    main.clear();
+    main.insert(main.end(), buried.begin(), buried.end());
+    main.insert(main.end(), fillers.begin(), fillers.end());
+    main.insert(main.end(), pinned.begin(), pinned.end());
+  }
+
   // rules = 1, Traditional
   // rules = 0, Default
   // rules = 4, Link
@@ -1976,6 +2132,7 @@ namespace ygopro
 
     const std::string deck1_;
     const std::string deck2_;
+    const std::vector<CardCode> opening_hand_;
 
     std::vector<uint32> main_deck0_;
     std::vector<uint32> main_deck1_;
@@ -2009,6 +2166,7 @@ namespace ygopro
     uint8_t win_reason_;
     const bool greedy_reward_;
     const bool use_deck_rewards_;
+    const bool obs_format_vectorized_;
 
     int lp_[2];
 
@@ -2084,12 +2242,22 @@ namespace ygopro
     YGOProEnvImpl(const EnvSpec<YGOProEnvFns> &spec, uint64_t env_seed)
         : spec_(spec), dist_int_(0, 0xffffffff),
           deck1_(spec.config["deck1"_]), deck2_(spec.config["deck2"_]),
+          opening_hand_(parse_opening_hand(spec.config["opening_hand"_])),
           player_(spec.config["player"_]), players_{nullptr, nullptr},
           play_modes_(parse_play_modes(spec.config["play_mode"_])),
           verbose_(spec.config["verbose"_]), record_(spec.config["record"_]),
           n_history_actions_(spec.config["n_history_actions"_]),
           greedy_reward_(spec.config["greedy_reward"_]),
-          use_deck_rewards_(spec.config["use_deck_rewards"_])
+          use_deck_rewards_(spec.config["use_deck_rewards"_]),
+          obs_format_vectorized_([&spec]() {
+            const std::string &fmt = spec.config["obs_format"_];
+            if (fmt != "raw" && fmt != "vectorized")
+            {
+              throw std::runtime_error(
+                  "obs_format must be 'raw' or 'vectorized', got: " + fmt);
+            }
+            return fmt == "vectorized";
+          }())
     {
       if (record_)
       {
@@ -2938,9 +3106,7 @@ namespace ygopro
       {
         state["info:num_options"_] = 1;
         state["obs:global_"_][22] = uint8_t(1);
-        // if (step_count_ >= spec_.config["max_steps"_]) {
-        //   fmt::println("Max steps reached return");
-        // }
+        _set_obs_ml(state);
         return;
       }
 
@@ -3023,10 +3189,344 @@ namespace ygopro
         int turn_diff = std::min(16, turn_count_ - uint8_t(state["obs:h_actions_"_](i, 12)));
         state["obs:h_actions_"_](i, 12) = static_cast<uint8_t>(turn_diff);
       }
+
+      _set_obs_ml(state);
     }
 
   private:
     using SpecInfos = ankerl::unordered_dense::map<std::string, SpecInfo>;
+
+    static constexpr int kMlStaticDim = 85;
+    static constexpr int kMlDynamicDim = 26;
+    static constexpr int kMlHistInfoDim = 23;
+    static constexpr int kMlPromptDim = 13;
+    static constexpr int kMlCmdSize = 11;
+    static constexpr int kMlActSize = 8;
+    static constexpr int kMlActionSize = 19; // 11 cmd + 8 act, 0-based last idx 18; ACTION_SIZE=20
+
+    void _zero_obs_ml(State &state)
+    {
+      state["obs:ml_card_emb_idx_"_].Fill(-1);
+      state["obs:ml_hist_emb_idx_"_].Fill(-1);
+      state["obs:ml_card_static_"_].Zero();
+      state["obs:ml_card_dynamic_"_].Zero();
+      state["obs:ml_history_info_"_].Zero();
+      state["obs:ml_prompt_"_].Zero();
+      state["obs:ml_n_me_"_] = 0;
+    }
+
+    void _encode_ml_one_card(TArray<float> &st, TArray<float> &dyn, int pi,
+                             const Card &c)
+    {
+      uint8_t location = static_cast<uint8_t>(c.location_);
+      const bool overlay = (location & LOCATION_OVERLAY) != 0;
+      if (overlay)
+      {
+        location = static_cast<uint8_t>(location & 0x7f);
+      }
+
+      auto type_ids = type_to_ids(c.type_);
+      const int n_type = std::min(24, static_cast<int>(type_ids.size()));
+      for (int j = 0; j < n_type; ++j)
+      {
+        st(pi, j) = static_cast<float>(type_ids[j]);
+      }
+      const bool is_monster = !type_ids.empty() && type_ids[0] != 0;
+      // encode_all_batch_fast uses types_flags[..., 23] as "Link", which is TYPE_SPSUMMON.
+      const bool is_link_py = type_ids.size() > 23 && type_ids[23] != 0;
+
+      auto [a1, a2] = float_transform(c.attack_);
+      auto [d1, d2] = float_transform(c.defense_);
+      const uint32_t atk_u =
+          (static_cast<uint32_t>(a1) << 8) | static_cast<uint32_t>(a2);
+      const uint32_t def_u =
+          (static_cast<uint32_t>(d1) << 8) | static_cast<uint32_t>(d2);
+
+      if (is_monster)
+      {
+        st(pi, 24) = static_cast<float>(c.level_) / 13.0f;
+        st(pi, 25) = static_cast<float>(atk_u) / 65535.0f;
+        st(pi, 26) = is_link_py ? 0.0f : static_cast<float>(def_u) / 65535.0f;
+        auto ait = attribute2id.find(static_cast<uint8_t>(c.attribute_));
+        if (ait != attribute2id.end() && ait->second >= 1 && ait->second <= 7)
+        {
+          st(pi, 27 + (ait->second - 1)) = 1.0f;
+        }
+        auto rit = race2id.find(c.race_);
+        if (rit != race2id.end() && rit->second >= 1 && rit->second <= 26)
+        {
+          st(pi, 34 + (rit->second - 1)) = 1.0f;
+        }
+      }
+
+      if (is_link_py)
+      {
+        static const int kArrowBits[8] = {
+            0x001, 0x002, 0x004, 0x008, 0x020, 0x040, 0x080, 0x100};
+        const int mask = static_cast<int>(def_u);
+        for (int j = 0; j < 8; ++j)
+        {
+          if (mask & kArrowBits[j])
+          {
+            st(pi, 60 + j) = 1.0f;
+          }
+        }
+      }
+
+      uint8_t pos_id = 0;
+      if (overlay)
+      {
+        pos_id = position_to_id(POS_FACEUP);
+      }
+      else if (location == LOCATION_DECK || location == LOCATION_HAND ||
+               location == LOCATION_EXTRA)
+      {
+        if (c.position_ & POS_FACEDOWN)
+        {
+          pos_id = position_to_id(POS_FACEDOWN);
+        }
+      }
+      else
+      {
+        pos_id = position_to_id(c.position_);
+      }
+      if (pos_id >= 1 && pos_id <= 8)
+      {
+        st(pi, 68 + (pos_id - 1)) = 1.0f;
+      }
+
+      uint8_t seq = 0;
+      if (location == LOCATION_MZONE || location == LOCATION_SZONE ||
+          location == LOCATION_GRAVE)
+      {
+        seq = static_cast<uint8_t>(c.sequence_ + 1);
+      }
+      const uint8_t loc_id = location_to_id(location);
+      if ((loc_id == 3 || loc_id == 4) && seq >= 1 && seq <= 7)
+      {
+        st(pi, 76 + seq) = 1.0f;
+      }
+      if (overlay)
+      {
+        st(pi, 84) = 1.0f;
+      }
+      if (loc_id >= 1 && loc_id <= 7)
+      {
+        dyn(pi, loc_id - 1) = 1.0f;
+      }
+    }
+
+    void _set_obs_ml(State &state)
+    {
+      _zero_obs_ml(state);
+      if (!obs_format_vectorized_ || pduel_ == 0)
+      {
+        return;
+      }
+
+      // obs msg_id → CMND_INDICES / PROMPTS (see decoding.MSG_ID_MAP)
+      static const int kObsMsgToCmnd[17] = {
+          -1, 0, 1, 2, 3, 4, 5, 6, -1, 7, 8, 9, 10, -1, -1, -1, -1};
+      static const int kObsMsgToPrompt[17] = {
+          -1, 0, 1, 3, 8, 5, 6, 6, -1, 4, 7, 2, 9, 10, 11, 12, -1};
+
+      auto &emb = state["obs:ml_card_emb_idx_"_];
+      auto &hemb = state["obs:ml_hist_emb_idx_"_];
+      auto &st = state["obs:ml_card_static_"_];
+      auto &dyn = state["obs:ml_card_dynamic_"_];
+      auto &hinfo = state["obs:ml_history_info_"_];
+      auto &prompt = state["obs:ml_prompt_"_];
+
+      const int mc = max_cards();
+      std::vector<int> me_codes;
+      me_codes.reserve(mc);
+      int n_me = 0;
+
+      const std::vector<uint8_t> locs = {
+          LOCATION_DECK, LOCATION_HAND, LOCATION_MZONE, LOCATION_SZONE,
+          LOCATION_GRAVE, LOCATION_REMOVED, LOCATION_EXTRA,
+      };
+      for (uint8_t loc : locs)
+      {
+        if (n_me >= mc)
+        {
+          break;
+        }
+        std::vector<Card> cards = get_cards_in_location(to_play_, loc);
+        for (const auto &c : cards)
+        {
+          if (n_me >= mc)
+          {
+            break;
+          }
+          CardId cid = 0;
+          try
+          {
+            cid = c_get_card_id(c.code_);
+          }
+          catch (const std::exception &)
+          {
+            continue;
+          }
+          _encode_ml_one_card(st, dyn, n_me, c);
+          emb(n_me) = emb_idx_for_card_id(cid);
+          me_codes.push_back(static_cast<int>(cid) - 1);
+          n_me++;
+        }
+      }
+      state["obs:ml_n_me_"_] = n_me;
+
+      auto is_skip = [](int mid) { return mid == 5 || mid == 11; };
+      auto is_spec = [](int mid) {
+        return mid == 1 || mid == 2 || mid == 4 || mid == 6 || mid == 9 || mid == 12;
+      };
+      auto is_cid_msg = [](int mid) { return mid == 3 || mid == 7 || mid == 10; };
+
+      if (!legal_actions_.empty())
+      {
+        int first_mid = 0;
+        try
+        {
+          first_mid = msg_to_id(legal_actions_[0].msg_);
+        }
+        catch (const std::exception &)
+        {
+          first_mid = 0;
+        }
+        const bool skip_attach = (first_mid == 0) || is_skip(first_mid);
+
+        for (const auto &action : legal_actions_)
+        {
+          int mid = 0;
+          try
+          {
+            mid = msg_to_id(action.msg_);
+          }
+          catch (const std::exception &)
+          {
+            continue;
+          }
+          if (mid >= 1 && mid <= 16)
+          {
+            const int pidx = kObsMsgToPrompt[mid];
+            if (pidx >= 0)
+            {
+              prompt(pidx) = 1.0f;
+            }
+          }
+          if (skip_attach)
+          {
+            continue;
+          }
+          if (static_cast<uint8_t>(action.act_) == 9)
+          {
+            continue; // Cancel
+          }
+
+          float avec[19] = {};
+          const int cmd = (mid >= 1 && mid <= 16) ? kObsMsgToCmnd[mid] : -1;
+          if (cmd >= 0)
+          {
+            avec[cmd] = 1.0f;
+          }
+          const int actc = static_cast<int>(action.act_);
+          const int act_idx = (actc >= 1 && actc <= 8) ? (10 + actc) : -1;
+          if (act_idx >= 0)
+          {
+            avec[act_idx] = 1.0f;
+          }
+
+          if (is_spec(mid))
+          {
+            const int spec = action.spec_index_ - 1;
+            if (spec >= 0 && spec < n_me)
+            {
+              for (int j = 0; j < 11; ++j)
+              {
+                dyn(spec, 7 + j) = avec[j];
+              }
+              for (int j = 11; j < 19; ++j)
+              {
+                dyn(spec, 7 + j) = dyn(spec, 7 + j) + avec[j];
+              }
+            }
+          }
+          else if (is_cid_msg(mid))
+          {
+            const int code_idx = static_cast<int>(action.cid_) - 1;
+            if (code_idx >= 0)
+            {
+              for (int t = 0; t < n_me; ++t)
+              {
+                if (me_codes[t] == code_idx)
+                {
+                  for (int j = 0; j < 11; ++j)
+                  {
+                    dyn(t, 7 + j) = avec[j];
+                  }
+                  for (int j = 11; j < 19; ++j)
+                  {
+                    dyn(t, 7 + j) = dyn(t, 7 + j) + avec[j];
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        for (int t = 0; t < mc; ++t)
+        {
+          for (int j = 7; j < 26; ++j)
+          {
+            if (float(dyn(t, j)) > 1.0f)
+            {
+              dyn(t, j) = 1.0f;
+            }
+          }
+        }
+      }
+
+      auto &h = state["obs:h_actions_"_];
+      const int n_hfeat = static_cast<int>(h.Shape()[1]);
+      for (int i = 0; i < n_history_actions_; ++i)
+      {
+        bool any = false;
+        for (int k = 0; k < n_hfeat; ++k)
+        {
+          if (uint8_t(h(i, k)) != 0)
+          {
+            any = true;
+            break;
+          }
+        }
+        if (!any)
+        {
+          continue;
+        }
+        const uint8_t hi = h(i, 1);
+        const uint8_t lo = h(i, 2);
+        const int be = (static_cast<int>(hi) << 8) | static_cast<int>(lo);
+        if (be >= 1)
+        {
+          hemb(i) = emb_idx_for_card_id(static_cast<CardId>(be));
+        }
+        const uint8_t mid = h(i, 3);
+        if (mid >= 1 && mid <= 16)
+        {
+          const int cmd = kObsMsgToCmnd[mid];
+          if (cmd >= 0 && cmd < 11)
+          {
+            hinfo(i, cmd) = 1.0f;
+          }
+        }
+        const uint8_t act = h(i, 4);
+        const int aact = (act >= 1 && act <= 8) ? (10 + act) : -1;
+        if (aact >= 11 && aact < 19)
+        {
+          hinfo(i, aact) = 1.0f;
+        }
+      }
+    }
 
     std::tuple<SpecInfos, std::vector<int>> _set_obs_cards(TArray<uint8_t> &f_cards, PlayerId to_play)
     {
@@ -3818,6 +4318,11 @@ namespace ygopro
       if (shuffle)
       {
         std::shuffle(main_deck.begin(), main_deck.end(), gen);
+      }
+
+      if (player == 0 && !opening_hand_.empty())
+      {
+        apply_opening_hand(main_deck, opening_hand_, startcount_, gen);
       }
 
       // add main deck in reverse order following ygopro
@@ -6852,7 +7357,7 @@ namespace ygopro
       else
       {
         auto &env_impl = env_impls_[idx];
-        done_ = env_impl.ret_reward_ != 0;
+        done_ = env_impl.done();
         State state = Allocate();
         env_impl.WriteState(state);
       }

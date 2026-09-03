@@ -16,6 +16,8 @@ PYBIND11_MODULE(ygopro_ygoenv, m)
         py::arg("reward_json") = "");
   m.def("load_reward_json", &ygopro::load_reward_json,
         py::arg("reward_json"));
+  m.def("set_emb_index_map", &ygopro::set_emb_index_map,
+        py::arg("code_to_emb_idx"));
 
   // Add exception translation
   py::register_exception_translator([](std::exception_ptr p)
